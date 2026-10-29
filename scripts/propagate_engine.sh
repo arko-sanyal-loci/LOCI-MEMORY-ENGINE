@@ -12,13 +12,10 @@ echo "=== [RING 0] Deterministic Substrate & Test Pass ==="
 python3 -m unittest discover tests/ -v
 
 echo "=== [RING 0] Secret Hygiene Scan ==="
-# Check for credential files tracked in git
 if git ls-files | grep -E "(credentials\.json|token\.json|\.credentials/)" 2>/dev/null; then
     echo "ERROR: Tracked credential file detected in git index!"
     exit 1
 fi
-
-# Check for hardcoded private keys or tokens in source code
 if grep -rnE "BEGIN [A-Z]+ PRIVATE KEY" loci_engine/ tests/ 2>/dev/null; then
     echo "ERROR: Unencrypted private key detected in source tree!"
     exit 1
@@ -35,14 +32,14 @@ if [ ! -f manifest.sha256 ] || [ "$LOCAL_HASH" != "$(cat manifest.sha256 | tr -d
 fi
 
 echo "=== [RING 1.5] Unit Test for MCP Daemon ==="
-python3 -c "
-import subprocess, json
-p = subprocess.Popen(["python3", "-m", "loci_engine.mcp_server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+python3 -c '
+import subprocess, json, sys
+p = subprocess.Popen([sys.executable, "-m", "loci_engine.mcp_server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n"
-out, _ = p.communicate(input=req, timeout=3)
-assert "healthy" in out, "MCP Daemon healthcheck failed"
+out, err = p.communicate(input=req, timeout=3)
+assert "healthy" in out, f"MCP Daemon healthcheck failed: {err}"
 print("MCP Daemon Self-Test: OK")
-"
+'
 
 echo "=== [RING 2] Canary Sync to loci-console (Wired 192.168.0.149) ==="
 git push arko-sanyal@"$CONSOLE_IP":"$REPO_DIR" main --no-verify
