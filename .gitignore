@@ -19,3 +19,5 @@ metastore_db/
 spark-warehouse/
 *.parquet
 *.orc
+
+context2.db*
