@@ -2,7 +2,7 @@
 """
 Loci Memory Engine - Model Context Protocol (MCP) Server Daemon
 JSON-RPC 2.0 stdio transport exposing Unified Core governance,
-thermodynamic budgeting, and SQLite WAL storage operations.
+thermodynamic budgeting, SQLite WAL storage, and LoopGuard circuit breaking.
 """
 
 import sys
@@ -16,13 +16,29 @@ from loci_engine.unified_core import (
     DynamicTokenCoupledSnippetEngine
 )
 from loci_engine.storage import StorageEngine
+from loci_engine.loop_guard import LoopGuardCircuitBreaker
 
 storage = StorageEngine()
+loop_guard = LoopGuardCircuitBreaker(threshold=3)
 
 def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger) -> Dict[str, Any]:
     req_id = req.get("id")
     method = req.get("method")
     params = req.get("params", {})
+
+    # Evaluate loop interceptor on incoming commands (bypass ping/budget resolution)
+    if method not in ("ping", "resolve_budget"):
+        guard_eval = loop_guard.record_and_evaluate(action=str(method), params=params)
+        if guard_eval["circuit_tripped"]:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32000,
+                    "message": "DETERMINISTIC_ABORT: Recursive loop detected by LoopGuard (N=3 identical states).",
+                    "data": guard_eval
+                }
+            }
 
     if method == "ping":
         return {"jsonrpc": "2.0", "id": req_id, "result": {"status": "healthy", "engine": "loci-unified-core"}}
@@ -81,6 +97,113 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
         limit = int(params.get("limit", 5))
         records = storage.lexical_search(query=query, limit=limit)
         return {"jsonrpc": "2.0", "id": req_id, "result": {"matches": records}}
+
+    elif method == "loop_guard.reset":
+        loop_guard
+cat << 'EOF' > ~/loci-memory-engine/loci_engine/mcp_server.py
+#!/usr/bin/env python3
+"""
+Loci Memory Engine - Model Context Protocol (MCP) Server Daemon
+JSON-RPC 2.0 stdio transport exposing Unified Core governance,
+thermodynamic budgeting, SQLite WAL storage, and LoopGuard circuit breaking.
+"""
+
+import sys
+import json
+import logging
+from typing import Dict, Any
+
+from loci_engine.unified_core import (
+    NonOffsettingGoodwillLedger,
+    StickPrincipleValenceGate,
+    DynamicTokenCoupledSnippetEngine
+)
+from loci_engine.storage import StorageEngine
+from loci_engine.loop_guard import LoopGuardCircuitBreaker
+
+storage = StorageEngine()
+loop_guard = LoopGuardCircuitBreaker(threshold=3)
+
+def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger) -> Dict[str, Any]:
+    req_id = req.get("id")
+    method = req.get("method")
+    params = req.get("params", {})
+
+    # Evaluate loop interceptor on incoming commands (bypass ping/budget resolution)
+    if method not in ("ping", "resolve_budget"):
+        guard_eval = loop_guard.record_and_evaluate(action=str(method), params=params)
+        if guard_eval["circuit_tripped"]:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32000,
+                    "message": "DETERMINISTIC_ABORT: Recursive loop detected by LoopGuard (N=3 identical states).",
+                    "data": guard_eval
+                }
+            }
+
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"status": "healthy", "engine": "loci-unified-core"}}
+
+    elif method == "score_action":
+        k = params.get("knowledge_k", "operational_default")
+        p = params.get("application_point", "routine_administrative_task")
+        intent = float(params.get("intent", 0.0))
+        consent = float(params.get("consent", 1.0))
+        vuln = float(params.get("target_vulnerability", 0.0))
+        cid = float(params.get("c_id", 0.85))
+
+        res = StickPrincipleValenceGate.score_vexec(
+            knowledge_k=k,
+            application_point=p,
+            intent=intent,
+            consent=consent,
+            target_vulnerability=vuln,
+            c_id=cid
+        )
+        return {"jsonrpc": "2.0", "id": req_id, "result": res}
+
+    elif method == "record_goodwill":
+        aid = params.get("action_id", "act_default")
+        actor = params.get("actor", "operator")
+        delta = float(params.get("delta", 0.0))
+        is_formative = bool(params.get("is_formative", False))
+
+        rec = ledger.record_goodwill_action(action_id=aid, actor=actor, delta=delta, is_formative=is_formative)
+        return {"jsonrpc": "2.0", "id": req_id, "result": rec}
+
+    elif method == "resolve_budget":
+        score = float(params.get("confidence_score", 0.85))
+        base = int(params.get("baseline_bytes", 60))
+        budget = DynamicTokenCoupledSnippetEngine.calculate_snippet_budget(confidence_score=score, baseline_bytes=base)
+        return {"jsonrpc": "2.0", "id": req_id, "result": budget}
+
+    elif method == "memory.ingest_fact":
+        fact_id = params.get("id")
+        ns = params.get("namespace", "general")
+        text = params.get("text", "")
+        heat = float(params.get("heat", 0.85))
+        supersedes = params.get("supersedes_id")
+
+        res_id = storage.insert_fact(
+            item_id=fact_id,
+            namespace=ns,
+            canonical_text=text,
+            heat=heat,
+            supersedes_id=supersedes
+        )
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"stored_id": res_id, "status": "active"}}
+
+    elif method == "memory.search_lexical":
+        query = params.get("query", "")
+        limit = int(params.get("limit", 5))
+        records = storage.lexical_search(query=query, limit=limit)
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"matches": records}}
+
+    elif method == "loop_guard.reset":
+        loop_guard.reset()
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"status": "reset_successful"}}
 
     return {
         "jsonrpc": "2.0",
