@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Loci Memory Engine - Model Context Protocol (MCP) Server Daemon
-JSON-RPC 2.0 stdio transport exposing Unified Core governance,
-thermodynamic budgeting, SQLite WAL storage, and LoopGuard circuit breaking.
+Fully compliant with MCP 2024-11-05 specification and direct JSON-RPC 2.0.
+Exposes Unified Core governance, thermodynamic budgeting, SQLite WAL storage,
+and LoopGuard circuit breaking.
 """
 
 import sys
 import json
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from loci_engine.unified_core import (
     NonOffsettingGoodwillLedger,
@@ -20,14 +21,65 @@ from loci_engine.loop_guard import LoopGuardCircuitBreaker
 storage = StorageEngine()
 loop_guard = LoopGuardCircuitBreaker(threshold=3)
 
-def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger) -> Dict[str, Any]:
+MCP_TOOLS = [
+    {
+        "name": "memory_search_lexical",
+        "description": "Search active facts in Loci cold storage (context2.db) using SQLite FTS5 lexical matching.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "FTS5 keyword query string (e.g. 'RTX', 'Barcelo')"},
+                "limit": {"type": "integer", "description": "Max matching records to return", "default": 5}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "memory_ingest_fact",
+        "description": "Ingest an active, versioned fact into Loci cold storage (context2.db) with cryptographic hash lineage.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Unique fact identifier"},
+                "namespace": {"type": "string", "description": "Fact namespace", "default": "general"},
+                "text": {"type": "string", "description": "Canonical text payload"},
+                "heat": {"type": "number", "description": "Initial thermal activation (0.0 to 1.0)", "default": 0.85},
+                "supersedes_id": {"type": "string", "description": "Optional ID of superseded predecessor fact"}
+            },
+            "required": ["id", "text"]
+        }
+    },
+    {
+        "name": "score_action",
+        "description": "Evaluate an operational action through StickPrincipleValenceGate to compute v_exec and ethical clearance.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "knowledge_k": {"type": "string", "default": "operational_default"},
+                "application_point": {"type": "string", "default": "routine_administrative_task"},
+                "intent": {"type": "number", "default": 0.0},
+                "consent": {"type": "number", "default": 1.0},
+                "target_vulnerability": {"type": "number", "default": 0.0},
+                "c_id": {"type": "number", "default": 0.85}
+            }
+        }
+    }
+]
+
+def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger) -> Optional[Dict[str, Any]]:
     req_id = req.get("id")
     method = req.get("method")
     params = req.get("params", {})
 
-    # Evaluate loop interceptor on incoming commands (bypass ping/budget resolution)
-    if method not in ("ping", "resolve_budget"):
-        guard_eval = loop_guard.record_and_evaluate(action=str(method), params=params)
+    # Protocol notifications (no id) require no response
+    if req_id is None and method == "notifications/initialized":
+        return None
+
+    # LoopGuard circuit breaking on mutating/tool operations
+    if method in ("tools/call", "memory.ingest_fact", "memory.search_lexical", "score_action"):
+        action_key = f"tool:{params.get('name')}" if method == "tools/call" else str(method)
+        eval_params = params.get("arguments", params)
+        guard_eval = loop_guard.record_and_evaluate(action=action_key, params=eval_params)
         if guard_eval["circuit_tripped"]:
             return {
                 "jsonrpc": "2.0",
@@ -39,62 +91,131 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
                 }
             }
 
-    if method == "ping":
+    # Standard MCP Lifecycle Endpoints
+    if method == "initialize":
+        client_version = params.get("protocolVersion", "2024-11-05")
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": client_version,
+                "capabilities": {
+                    "tools": {"listChanged": False}
+                },
+                "serverInfo": {
+                    "name": "loci-memory-engine",
+                    "version": "1.0.0"
+                }
+            }
+        }
+
+    elif method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "tools": MCP_TOOLS
+            }
+        }
+
+    elif method == "tools/call":
+        tool_name = params.get("name")
+        args = params.get("arguments", {})
+
+        if tool_name == "memory_search_lexical":
+            query = args.get("query", "")
+            limit = int(args.get("limit", 5))
+            records = storage.lexical_search(query=query, limit=limit)
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(records, indent=2)}]
+                }
+            }
+
+        elif tool_name == "memory_ingest_fact":
+            res_id = storage.insert_fact(
+                item_id=args.get("id"),
+                namespace=args.get("namespace", "general"),
+                canonical_text=args.get("text", ""),
+                heat=float(args.get("heat", 0.85)),
+                supersedes_id=args.get("supersedes_id")
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": f"Successfully ingested fact '{res_id}'."}]
+                }
+            }
+
+        elif tool_name == "score_action":
+            res = StickPrincipleValenceGate.score_vexec(
+                knowledge_k=args.get("knowledge_k", "operational_default"),
+                application_point=args.get("application_point", "routine_administrative_task"),
+                intent=float(args.get("intent", 0.0)),
+                consent=float(args.get("consent", 1.0)),
+                target_vulnerability=float(args.get("target_vulnerability", 0.0)),
+                c_id=float(args.get("c_id", 0.85))
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            }
+
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}
+        }
+
+    # Direct JSON-RPC Compatibility Endpoints
+    elif method == "ping":
         return {"jsonrpc": "2.0", "id": req_id, "result": {"status": "healthy", "engine": "loci-unified-core"}}
 
     elif method == "score_action":
-        k = params.get("knowledge_k", "operational_default")
-        p = params.get("application_point", "routine_administrative_task")
-        intent = float(params.get("intent", 0.0))
-        consent = float(params.get("consent", 1.0))
-        vuln = float(params.get("target_vulnerability", 0.0))
-        cid = float(params.get("c_id", 0.85))
-
         res = StickPrincipleValenceGate.score_vexec(
-            knowledge_k=k,
-            application_point=p,
-            intent=intent,
-            consent=consent,
-            target_vulnerability=vuln,
-            c_id=cid
+            knowledge_k=params.get("knowledge_k", "operational_default"),
+            application_point=params.get("application_point", "routine_administrative_task"),
+            intent=float(params.get("intent", 0.0)),
+            consent=float(params.get("consent", 1.0)),
+            target_vulnerability=float(params.get("target_vulnerability", 0.0)),
+            c_id=float(params.get("c_id", 0.85))
         )
         return {"jsonrpc": "2.0", "id": req_id, "result": res}
 
     elif method == "record_goodwill":
-        aid = params.get("action_id", "act_default")
-        actor = params.get("actor", "operator")
-        delta = float(params.get("delta", 0.0))
-        is_formative = bool(params.get("is_formative", False))
-
-        rec = ledger.record_goodwill_action(action_id=aid, actor=actor, delta=delta, is_formative=is_formative)
+        rec = ledger.record_goodwill_action(
+            action_id=params.get("action_id", "act_default"),
+            actor=params.get("actor", "operator"),
+            delta=float(params.get("delta", 0.0)),
+            is_formative=bool(params.get("is_formative", False))
+        )
         return {"jsonrpc": "2.0", "id": req_id, "result": rec}
 
     elif method == "resolve_budget":
-        score = float(params.get("confidence_score", 0.85))
-        base = int(params.get("baseline_bytes", 60))
-        budget = DynamicTokenCoupledSnippetEngine.calculate_snippet_budget(confidence_score=score, baseline_bytes=base)
+        budget = DynamicTokenCoupledSnippetEngine.calculate_snippet_budget(
+            confidence_score=float(params.get("confidence_score", 0.85)),
+            baseline_bytes=int(params.get("baseline_bytes", 60))
+        )
         return {"jsonrpc": "2.0", "id": req_id, "result": budget}
 
     elif method == "memory.ingest_fact":
-        fact_id = params.get("id")
-        ns = params.get("namespace", "general")
-        text = params.get("text", "")
-        heat = float(params.get("heat", 0.85))
-        supersedes = params.get("supersedes_id")
-
         res_id = storage.insert_fact(
-            item_id=fact_id,
-            namespace=ns,
-            canonical_text=text,
-            heat=heat,
-            supersedes_id=supersedes
+            item_id=params.get("id"),
+            namespace=params.get("namespace", "general"),
+            canonical_text=params.get("text", ""),
+            heat=float(params.get("heat", 0.85)),
+            supersedes_id=params.get("supersedes_id")
         )
         return {"jsonrpc": "2.0", "id": req_id, "result": {"stored_id": res_id, "status": "active"}}
 
     elif method == "memory.search_lexical":
-        query = params.get("query", "")
-        limit = int(params.get("limit", 5))
-        records = storage.lexical_search(query=query, limit=limit)
+        records = storage.lexical_search(query=params.get("query", ""), limit=int(params.get("limit", 5)))
         return {"jsonrpc": "2.0", "id": req_id, "result": {"matches": records}}
 
     elif method == "loop_guard.reset":
@@ -116,8 +237,9 @@ def main():
         try:
             req = json.loads(line)
             resp = handle_rpc_request(req, ledger)
-            sys.stdout.write(json.dumps(resp) + "\n")
-            sys.stdout.flush()
+            if resp is not None:
+                sys.stdout.write(json.dumps(resp) + "\n")
+                sys.stdout.flush()
         except Exception as e:
             err_resp = {
                 "jsonrpc": "2.0",
