@@ -18,9 +18,13 @@ jobs:
           python-version: "3.12"
 
       - name: Run Operational Taxonomy Suite (run_suite)
+        env:
+          LOCI_USER: arko-sanyal
         run: |
           python3 -c "import loci_engine.unified_core as uc; uc.run_suite()"
 
       - name: Run Invariant Unit Tests
+        env:
+          LOCI_USER: arko-sanyal
         run: |
           python3 -m unittest discover -s tests -p "test_*.py" -v

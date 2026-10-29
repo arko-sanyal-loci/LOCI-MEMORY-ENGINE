@@ -1,3 +1,4 @@
+import os
 import math
 import time
 import getpass
@@ -176,7 +177,7 @@ def run_suite():
     print("=" * 67)
 
     resolver = DeductiveIdentityResolver()
-    user = getpass.getuser()
+    user = os.environ.get("LOCI_USER", getpass.getuser())
     past_ts = time.time() - (800 * 86400)
     principal_id = resolver.resolve_principal_confidence(
         local_user=user,
