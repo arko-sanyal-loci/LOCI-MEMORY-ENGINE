@@ -34,6 +34,16 @@ if [ ! -f manifest.sha256 ] || [ "$LOCAL_HASH" != "$(cat manifest.sha256 | tr -d
     git commit -m "chore(manifest): update tree hash to $LOCAL_HASH"
 fi
 
+echo "=== [RING 1.5] Unit Test for MCP Daemon ==="
+python3 -c "
+import subprocess, json
+p = subprocess.Popen(["python3", "-m", "loci_engine.mcp_server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n"
+out, _ = p.communicate(input=req, timeout=3)
+assert "healthy" in out, "MCP Daemon healthcheck failed"
+print("MCP Daemon Self-Test: OK")
+"
+
 echo "=== [RING 2] Canary Sync to loci-console (Wired 192.168.0.149) ==="
 git push arko-sanyal@"$CONSOLE_IP":"$REPO_DIR" main --no-verify
 ssh arko-sanyal@"$CONSOLE_IP" "cd ~/loci-memory-engine && ~/loci-spark-venv/bin/python -m unittest discover tests/ -v"

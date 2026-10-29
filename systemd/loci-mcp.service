@@ -1,0 +1,30 @@
+[Unit]
+Description=Loci Memory Engine MCP Daemon
+After=network.target local-fs.target
+Documentation=https://github.com/arko-sanyal2/loci-memory-engine
+
+[Service]
+Type=simple
+WorkingDirectory=%h/loci-memory-engine
+ExecStart=/usr/bin/python3 -m loci_engine.mcp_server
+Restart=always
+RestartSec=3s
+
+# Hardening / Isolation
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/loci-memory-engine
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+# Standard IO mapping
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loci-mcp
+
+[Install]
+WantedBy=default.target
