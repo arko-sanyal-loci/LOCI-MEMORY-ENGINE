@@ -6,6 +6,7 @@ from loci_engine.storage import StorageEngine
 class TestStorageEngine(unittest.TestCase):
     def setUp(self):
         self.temp_db = tempfile.NamedTemporaryFile(delete=False)
+        self.temp_db.close()
         self.storage = StorageEngine(db_path=self.temp_db.name)
 
     def tearDown(self):
