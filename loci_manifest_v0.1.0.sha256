@@ -1,0 +1,5 @@
+844606a2e6a8001163e2e2cf72fe318c5a62e6722709ec406b5862caa692d33c  ./.github/workflows/ci.yml
+f912cf431f43ff1c1ed4418048612e114e23ead4234a656603454f35508d184e  ./loci_engine/__init__.py
+0807b9d182626d8f2422a0da06253eb65d3f4a73f85eedbc05dcd353c3dfd307  ./loci_engine/unified_core.py
+cb8c862c220d7d4adaa3eefff493a2a7d7235b2151202a71afa125beae653bf7  ./README.md
+c3478d8d648c4f03864e65751666a35583b77c43fbd89a997f64107d7611aadc  ./tests/test_unified_core.py
