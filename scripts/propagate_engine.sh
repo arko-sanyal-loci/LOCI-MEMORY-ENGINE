@@ -41,9 +41,23 @@ assert "healthy" in out, f"MCP Daemon healthcheck failed: {err}"
 print("MCP Daemon Self-Test: OK")
 '
 
+# Local daemon reload if active
+if systemctl --user is-active --quiet loci-mcp.service 2>/dev/null; then
+    echo "Reloading local loci-mcp daemon..."
+    systemctl --user restart loci-mcp.service
+fi
+
 echo "=== [RING 2] Canary Sync to loci-console (Wired 192.168.0.149) ==="
 git push arko-sanyal@"$CONSOLE_IP":"$REPO_DIR" main --no-verify
 ssh arko-sanyal@"$CONSOLE_IP" "cd ~/loci-memory-engine && ~/loci-spark-venv/bin/python -m unittest discover tests/ -v"
+
+# Canary daemon reload if active
+ssh arko-sanyal@"$CONSOLE_IP" "
+if systemctl --user is-active --quiet loci-mcp.service 2>/dev/null; then
+    echo 'Reloading canary loci-mcp daemon...'
+    systemctl --user restart loci-mcp.service
+fi
+"
 
 echo "=== [RING 3] VPS Substrate Promotion (srv1775801.hstgr.cloud) ==="
 git push root@"$VPS_HOST":"$VPS_PATH" main --no-verify
