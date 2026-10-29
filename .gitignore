@@ -5,3 +5,17 @@ __pycache__/
 .pytest_cache/
 
 loci_manifest_*.sha256
+
+# Google Service Credentials & Token Caches
+credentials.json
+token.json
+token.pickle
+.credentials/
+tokens/
+
+# Apache Spark Runtime Artifacts
+derby.log
+metastore_db/
+spark-warehouse/
+*.parquet
+*.orc
