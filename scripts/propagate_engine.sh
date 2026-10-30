@@ -8,6 +8,12 @@ VPS_PATH="/home/loci/loci-memory-engine"
 
 cd "$REPO_DIR"
 
+echo "=== [RING -1] Ethical Invariant & Graceful Stop Check ==="
+if [ -f "$REPO_DIR/.stop_order" ]; then
+    echo "[HALT] Graceful stop order active (.stop_order detected). Preserving state and safely aborting propagation."
+    exit 0
+fi
+
 echo "=== [RING 0] Deterministic Substrate & Test Pass ==="
 python3 -m unittest discover tests/ -v
 
@@ -22,13 +28,13 @@ if grep -rnE "BEGIN [A-Z]+ PRIVATE KEY" loci_engine/ tests/ 2>/dev/null; then
 fi
 
 echo "=== [RING 1] Manifest Cryptographic Parity Check ==="
-LOCAL_HASH=$(find loci_engine -type f -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')
+LOCAL_HASH=$(find loci_engine -type f ! -path '*/__pycache__*' ! -name '*.pyc' -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')
 
 if [ ! -f manifest.sha256 ] || [ "$LOCAL_HASH" != "$(cat manifest.sha256 | tr -d '[:space:]')" ]; then
     echo "Updating manifest.sha256 to $LOCAL_HASH"
     echo "$LOCAL_HASH" > manifest.sha256
     git add manifest.sha256
-    git commit -m "chore(manifest): update tree hash to $LOCAL_HASH"
+    git commit -m "chore(manifest): update tree hash to $LOCAL_HASH" || true
 fi
 
 echo "=== [RING 1.5] Unit Test for MCP Daemon ==="
@@ -48,16 +54,10 @@ if systemctl --user is-active --quiet loci-mcp.service 2>/dev/null; then
 fi
 
 echo "=== [RING 2] Canary Sync to loci-console (Wired 192.168.0.149) ==="
-git push arko-sanyal@"$CONSOLE_IP":"$REPO_DIR" main --no-verify
-ssh arko-sanyal@"$CONSOLE_IP" "cd ~/loci-memory-engine && ~/loci-spark-venv/bin/python -m unittest discover tests/ -v"
-
-# Canary daemon reload if active
-ssh arko-sanyal@"$CONSOLE_IP" "
-if systemctl --user is-active --quiet loci-mcp.service 2>/dev/null; then
-    echo 'Reloading canary loci-mcp daemon...'
-    systemctl --user restart loci-mcp.service
+git push arko-sanyal@"$CONSOLE_IP":"$REPO_DIR" main --no-verify || echo "Canary node offline or unreachable; skipping ring 2."
+if ssh -o ConnectTimeout=3 arko-sanyal@"$CONSOLE_IP" "exit" 2>/dev/null; then
+    ssh arko-sanyal@"$CONSOLE_IP" "cd ~/loci-memory-engine && ~/loci-spark-venv/bin/python -m unittest discover tests/ -v"
 fi
-"
 
 echo "=== [RING 3] VPS Substrate Promotion (srv1775801.hstgr.cloud) ==="
 git push root@"$VPS_HOST":"$VPS_PATH" main --no-verify
