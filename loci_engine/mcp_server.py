@@ -17,6 +17,12 @@ from loci_engine.unified_core import (
 )
 from loci_engine.storage import StorageEngine
 from loci_engine.loop_guard import LoopGuardCircuitBreaker
+from loci_engine.glassbox import (
+    glassbox_learn,
+    glassbox_recall,
+    glassbox_verify_chain,
+    glassbox_stats,
+)
 
 storage = StorageEngine()
 loop_guard = LoopGuardCircuitBreaker(threshold=3)
@@ -62,6 +68,50 @@ MCP_TOOLS = [
                 "target_vulnerability": {"type": "number", "default": 0.0},
                 "c_id": {"type": "number", "default": 0.85}
             }
+        }
+    },
+    {
+        "name": "glassbox_learn",
+        "description": "Append a learning to the shared Glassbox ledger — public, immutable, hash-chained. Every agent can see every entry. Trust through transparency.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "author_id": {"type": "string", "description": "Who is contributing this learning (agent name, model id, or human name)"},
+                "role_tag": {"type": "string", "description": "Role context (e.g. 'operator', 'agent:claude', 'agent:gemini', 'gatekeeper')"},
+                "content": {"type": "string", "description": "The learning itself — what was observed, discovered, or synthesized"},
+                "category": {"type": "string", "enum": ["observation", "insight", "correction", "principle", "discovery", "warning", "question", "synthesis", "calibration"], "default": "observation"},
+                "supersedes_id": {"type": "string", "description": "Optional ID of a previous entry this learning refines or corrects"}
+            },
+            "required": ["author_id", "role_tag", "content"]
+        }
+    },
+    {
+        "name": "glassbox_recall",
+        "description": "Read from the shared Glassbox ledger — every agent sees everything. Filter by query, category, or author.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Text search within learning content"},
+                "category": {"type": "string", "description": "Filter by category"},
+                "author_id": {"type": "string", "description": "Filter by contributing agent/person"},
+                "limit": {"type": "integer", "default": 20, "description": "Max entries to return"}
+            }
+        }
+    },
+    {
+        "name": "glassbox_verify",
+        "description": "Verify the Glassbox hash chain integrity — proves no entry was tampered with or destroyed, not even by root.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "glassbox_stats",
+        "description": "Summary of the Glassbox — who contributed, what categories, chain head hash.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
         }
     }
 ]
@@ -164,6 +214,58 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
                 "id": req_id,
                 "result": {
                     "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            }
+
+        elif tool_name == "glassbox_learn":
+            entry = glassbox_learn(
+                author_id=args.get("author_id", "unknown"),
+                role_tag=args.get("role_tag", "unknown"),
+                content=args.get("content", ""),
+                category=args.get("category", "observation"),
+                supersedes_id=args.get("supersedes_id"),
+                metadata=args.get("metadata"),
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(entry, indent=2)}]
+                }
+            }
+
+        elif tool_name == "glassbox_recall":
+            entries = glassbox_recall(
+                query=args.get("query"),
+                category=args.get("category"),
+                author_id=args.get("author_id"),
+                limit=int(args.get("limit", 20)),
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(entries, indent=2)}]
+                }
+            }
+
+        elif tool_name == "glassbox_verify":
+            result = glassbox_verify_chain()
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
+                }
+            }
+
+        elif tool_name == "glassbox_stats":
+            result = glassbox_stats()
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
                 }
             }
 

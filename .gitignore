@@ -21,3 +21,4 @@ spark-warehouse/
 *.orc
 
 context2.db*
+glassbox_ledger.jsonl*
