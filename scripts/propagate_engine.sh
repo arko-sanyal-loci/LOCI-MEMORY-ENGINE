@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="$HOME/loci-memory-engine"
-CONSOLE_IP="192.168.0.149"
+CONSOLE_IP="192.168.10.149"
 VPS_HOST="srv1775801.hstgr.cloud"
 VPS_PATH="/home/loci/loci-memory-engine"
 
