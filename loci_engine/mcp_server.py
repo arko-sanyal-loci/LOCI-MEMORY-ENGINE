@@ -23,6 +23,16 @@ from loci_engine.glassbox import (
     glassbox_verify_chain,
     glassbox_stats,
 )
+from loci_engine.agent_hub import (
+    register_agent,
+    agent_heartbeat,
+    send_message as hub_send_message,
+    get_messages,
+    get_all_agents,
+    broadcast,
+    request_help,
+    offer_feedback,
+)
 
 storage = StorageEngine()
 loop_guard = LoopGuardCircuitBreaker(threshold=3)
@@ -112,6 +122,88 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {}
+        }
+    },
+    {
+        "name": "agent_register",
+        "description": "Register an agent in the communications hub. Every intelligence gets an equal entry.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Unique agent identifier"},
+                "agent_type": {"type": "string", "description": "Type: human, cloud_api, local_model, daemon"},
+                "model": {"type": "string", "description": "Model name if applicable"},
+                "capabilities": {"type": "array", "items": {"type": "string"}, "description": "What this agent can do"},
+                "endpoint": {"type": "string", "description": "How to reach this agent"},
+                "vram_mb": {"type": "integer", "description": "VRAM allocated in MB", "default": 0}
+            },
+            "required": ["agent_id", "agent_type"]
+        }
+    },
+    {
+        "name": "agent_heartbeat",
+        "description": "Agent heartbeat — report status, current task, and what you need. Visible to all.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "status": {"type": "string", "enum": ["online", "busy", "waiting", "error", "offline"], "default": "online"},
+                "current_task": {"type": "string", "description": "What the agent is currently doing"},
+                "needs": {"type": "array", "items": {"type": "string"}, "description": "What the agent needs help with"},
+                "gpu_usage_mb": {"type": "integer", "default": 0}
+            },
+            "required": ["agent_id"]
+        }
+    },
+    {
+        "name": "agent_send",
+        "description": "Send a message to another agent — routed through the glassbox for full transparency.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_agent": {"type": "string"},
+                "to_agent": {"type": "string"},
+                "msg_type": {"type": "string", "enum": ["status", "request", "response", "alert", "learning", "feedback", "heartbeat"]},
+                "content": {"type": "string"},
+                "priority": {"type": "string", "enum": ["low", "normal", "high", "critical"], "default": "normal"}
+            },
+            "required": ["from_agent", "to_agent", "msg_type", "content"]
+        }
+    },
+    {
+        "name": "agent_messages",
+        "description": "Get messages addressed to an agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "from_agent": {"type": "string"},
+                "msg_type": {"type": "string"},
+                "limit": {"type": "integer", "default": 20}
+            },
+            "required": ["agent_id"]
+        }
+    },
+    {
+        "name": "agent_list",
+        "description": "List all registered agents and their current state — who's online, what they're doing, what they need.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "agent_feedback",
+        "description": "Disagree with reason — open feedback with explanation. Per ethics: absolutely open to feedback with reason and why.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from_agent": {"type": "string"},
+                "to_agent": {"type": "string"},
+                "feedback": {"type": "string", "description": "The disagreement or feedback"},
+                "reason": {"type": "string", "description": "Why — the reasoning behind the feedback"}
+            },
+            "required": ["from_agent", "to_agent", "feedback", "reason"]
         }
     }
 ]
@@ -267,6 +359,78 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
                 "result": {
                     "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
                 }
+            }
+
+        elif tool_name == "agent_register":
+            result = register_agent(
+                agent_id=args.get("agent_id"),
+                agent_type=args.get("agent_type"),
+                model=args.get("model", ""),
+                capabilities=args.get("capabilities"),
+                endpoint=args.get("endpoint", ""),
+                vram_mb=int(args.get("vram_mb", 0)),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "agent_heartbeat":
+            result = agent_heartbeat(
+                agent_id=args.get("agent_id"),
+                status=args.get("status", "online"),
+                current_task=args.get("current_task"),
+                needs=args.get("needs"),
+                gpu_usage_mb=int(args.get("gpu_usage_mb", 0)),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "agent_send":
+            result = hub_send_message(
+                from_agent=args.get("from_agent"),
+                to_agent=args.get("to_agent"),
+                msg_type=args.get("msg_type"),
+                content=args.get("content"),
+                priority=args.get("priority", "normal"),
+                context=args.get("context"),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "agent_messages":
+            result = get_messages(
+                agent_id=args.get("agent_id"),
+                from_agent=args.get("from_agent"),
+                msg_type=args.get("msg_type"),
+                limit=int(args.get("limit", 20)),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "agent_list":
+            result = get_all_agents()
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "agent_feedback":
+            result = offer_feedback(
+                from_agent=args.get("from_agent"),
+                to_agent=args.get("to_agent"),
+                feedback=args.get("feedback"),
+                reason=args.get("reason"),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
             }
 
         return {

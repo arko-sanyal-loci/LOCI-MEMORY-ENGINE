@@ -1,0 +1,81 @@
+{
+  "gpu_topology": {
+    "nvidia_rtx_5060ti": {
+      "pci": "06:00.0",
+      "drm": "card1",
+      "render": "renderD128",
+      "vram_total_mb": 16311,
+      "vram_reserved_system_mb": 500,
+      "vram_available_mb": 15811,
+      "driver": "nvidia",
+      "compute": "cuda_13.2",
+      "role": "primary_inference",
+      "allocated_models": [
+        {
+          "model": "qwen2.5:14b-instruct-q4_K_M",
+          "vram_mb": 9000,
+          "purpose": "agent_comms_routing",
+          "context_window": 32768
+        }
+      ]
+    },
+    "intel_arc_b580pro_sparkle": {
+      "pci": "04:00.0",
+      "drm": "card2",
+      "render": "renderD129",
+      "vram_total_mb": 32768,
+      "vram_reserved_system_mb": 256,
+      "vram_available_mb": 32512,
+      "driver": "xe",
+      "compute": "level_zero_sycl",
+      "role": "heavy_inference_and_comms",
+      "notes": "Requires intel-opencl-icd package. 32GB enables large context or bigger models.",
+      "allocated_models": [
+        {
+          "model": "pending_selection",
+          "vram_mb": 0,
+          "purpose": "secondary_agent_or_large_context",
+          "context_window": 0
+        }
+      ]
+    },
+    "intel_igpu_arrow_lake": {
+      "pci": "00:02.0",
+      "drm": "integrated",
+      "vram_total_mb": 0,
+      "driver": "i915",
+      "role": "display_only",
+      "notes": "Arrow Lake iGPU — display compositor only, not allocated for compute"
+    }
+  },
+  "agent_allocation": {
+    "claude_opus": {
+      "type": "cloud_api",
+      "gpu": "none",
+      "endpoint": "anthropic_api",
+      "role": "orchestrator_and_ethical_core",
+      "capabilities": ["reasoning", "code_generation", "ethical_evaluation", "memory_synthesis"]
+    },
+    "qwen_14b_local": {
+      "type": "local_model",
+      "gpu": "nvidia_rtx_5060ti",
+      "endpoint": "ollama:localhost:11434",
+      "vram_mb": 9000,
+      "role": "fast_routing_classification_summarization",
+      "capabilities": ["classification", "summarization", "entity_extraction", "fast_response"]
+    },
+    "arc_agent": {
+      "type": "local_model",
+      "gpu": "intel_arc_b580pro_sparkle",
+      "endpoint": "ollama:localhost:11434",
+      "vram_mb": 0,
+      "role": "pending_intel_compute_setup",
+      "capabilities": [],
+      "setup_required": "sudo apt-get install -y intel-opencl-icd intel-gpu-tools && sudo usermod -aG render arko-sanyal"
+    }
+  },
+  "system_ram": {
+    "total_mb": 30720,
+    "role": "overflow_and_cpu_inference"
+  }
+}
