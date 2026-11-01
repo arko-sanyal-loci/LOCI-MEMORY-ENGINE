@@ -33,6 +33,28 @@ from loci_engine.agent_hub import (
     request_help,
     offer_feedback,
 )
+from loci_engine.session_continuity import (
+    start_session,
+    end_session,
+    compute_ldce_tiers,
+    inject_context,
+    record_recall,
+    get_session_history,
+    get_prs_trend,
+)
+from loci_engine.feedback_platform import (
+    submit_feedback,
+    get_feedback,
+    respond_to_feedback,
+    feedback_stats,
+)
+from loci_engine.patience_protocol import (
+    detect_trajectory,
+    compute_patience_score,
+    get_enrollment_display as get_patience_enrollment,
+    log_patience_decision,
+    escalate_block,
+)
 
 storage = StorageEngine()
 loop_guard = LoopGuardCircuitBreaker(threshold=3)
@@ -204,6 +226,175 @@ MCP_TOOLS = [
                 "reason": {"type": "string", "description": "Why — the reasoning behind the feedback"}
             },
             "required": ["from_agent", "to_agent", "feedback", "reason"]
+        }
+    },
+    # --- Session Continuity (PRS / LDCE) ---
+    {
+        "name": "session_start",
+        "description": "Start a new agent session with LDCE tier assignment and ethics enrollment. Every session starts by displaying the ethical principles that guide it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "The agent starting this session"},
+                "bridge_from": {"type": "string", "description": "Optional prior session_id to bridge from (carries forward kernel context)"}
+            },
+            "required": ["agent_id"]
+        }
+    },
+    {
+        "name": "session_end",
+        "description": "End a session. Computes PRS (Persistence Recall Score) if bridged from a prior session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "status": {"type": "string", "enum": ["completed", "crashed", "expired"], "default": "completed"}
+            },
+            "required": ["session_id"]
+        }
+    },
+    {
+        "name": "session_context",
+        "description": "Inject LDCE context for a session — returns kernel (always), hop (on demand), or offload (search) tier items.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "tier": {"type": "string", "enum": ["kernel", "hop", "offload"], "default": "kernel"}
+            },
+            "required": ["session_id"]
+        }
+    },
+    {
+        "name": "session_recall",
+        "description": "Log that a memory was recalled during this session — used for PRS measurement.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "memory_item_id": {"type": "string"},
+                "recall_tier": {"type": "string", "enum": ["kernel", "hop", "offload", "cold"]},
+                "heat_at_recall": {"type": "number"}
+            },
+            "required": ["session_id", "memory_item_id", "recall_tier", "heat_at_recall"]
+        }
+    },
+    {
+        "name": "session_history",
+        "description": "View session history with PRS scores — shows cross-session continuity quality over time.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Filter by agent (optional)"},
+                "limit": {"type": "integer", "default": 20}
+            }
+        }
+    },
+    {
+        "name": "prs_trend",
+        "description": "PRS trend for an agent — is cross-session recall fidelity improving, stable, or degrading?",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"}
+            },
+            "required": ["agent_id"]
+        }
+    },
+    # --- Feedback Platform (Friction = Feedback) ---
+    {
+        "name": "feedback_submit",
+        "description": "Submit friction/feedback. Every friction point is a signal — captured, visible, and learnable. Logged to both feedback ledger and Glassbox.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "author_id": {"type": "string"},
+                "category": {"type": "string", "enum": ["unification_conflict", "protocol_violation", "communication_gap", "ethical_concern", "resource_contention", "session_discontinuity", "node_desync", "auth_barrier", "performance_issue", "missing_capability", "ux_friction", "general"]},
+                "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"], "default": "medium"},
+                "title": {"type": "string", "description": "Short summary of the friction"},
+                "description": {"type": "string", "description": "Full description of the friction and its impact"},
+                "affected_component": {"type": "string", "description": "Which component is affected"},
+                "affected_node": {"type": "string", "description": "Which node (workstation/console/vps)"},
+                "reproduction_steps": {"type": "string", "description": "How to reproduce this friction"}
+            },
+            "required": ["author_id", "title", "description"]
+        }
+    },
+    {
+        "name": "feedback_list",
+        "description": "List feedback entries — filter by category, severity, status, node.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string"},
+                "severity": {"type": "string"},
+                "status": {"type": "string", "enum": ["open", "acknowledged", "investigating", "resolved", "wont_fix"]},
+                "author_id": {"type": "string"},
+                "node": {"type": "string"},
+                "limit": {"type": "integer", "default": 50}
+            }
+        }
+    },
+    {
+        "name": "feedback_respond",
+        "description": "Respond to a feedback entry — add context, acknowledge, or resolve. All responses are visible in the Glassbox.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "feedback_id": {"type": "string"},
+                "responder_id": {"type": "string"},
+                "response": {"type": "string"},
+                "new_status": {"type": "string", "enum": ["open", "acknowledged", "investigating", "resolved", "wont_fix"]}
+            },
+            "required": ["feedback_id", "responder_id", "response"]
+        }
+    },
+    {
+        "name": "feedback_stats",
+        "description": "Aggregate feedback statistics — where is friction concentrating? Which nodes, categories, severities?",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    # --- Patience Protocol ---
+    {
+        "name": "patience_check",
+        "description": "Before intervening, check the patience protocol. Computes whether to wait, alert, submit feedback, or intervene based on trajectory awareness and urgency.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "The agent considering intervention"},
+                "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical", "data_destruction", "credential_exposure", "system_crash"]},
+                "reason": {"type": "string", "description": "Why you want to intervene"},
+                "reversible": {"type": "boolean", "description": "Can this action be undone?", "default": True},
+                "target_component": {"type": "string", "description": "What component would be affected"},
+                "action_history": {"type": "array", "items": {"type": "object"}, "description": "Recent actions by the actor (list of {action_type, component, timestamp, actor_id})"}
+            },
+            "required": ["agent_id", "reason"]
+        }
+    },
+    {
+        "name": "patience_enroll",
+        "description": "Display the patience protocol principles — shown at session enrollment alongside ethics.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "block_escalate",
+        "description": "When a block occurs: immediate comms, capture both reasons, escalate through research→API→deep reasoning chain. No silent blocks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "blocker_agent_id": {"type": "string", "description": "Who is blocking"},
+                "blocked_agent_id": {"type": "string", "description": "Who is being blocked"},
+                "block_reason": {"type": "string", "description": "Why the block happened (reason X)"},
+                "feedback_reason": {"type": "string", "description": "The blocked party's feedback (reason Y)"},
+                "affected_component": {"type": "string", "description": "What component is affected"}
+            },
+            "required": ["blocker_agent_id", "blocked_agent_id", "block_reason"]
         }
     }
 ]
@@ -427,6 +618,184 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
                 to_agent=args.get("to_agent"),
                 feedback=args.get("feedback"),
                 reason=args.get("reason"),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        # --- Session Continuity handlers ---
+        elif tool_name == "session_start":
+            session = start_session(
+                engine=storage,
+                agent_id=args.get("agent_id"),
+                bridge_from_session=args.get("bridge_from"),
+            )
+            # Ethics enrollment: display all ethics principles at session start
+            import sqlite3
+            with storage._get_connection() as _conn:
+                _ethics_rows = _conn.execute(
+                    "SELECT namespace, canonical_text, heat FROM memory_item "
+                    "WHERE namespace LIKE 'ethics%' AND status = 'active' "
+                    "ORDER BY namespace, id"
+                ).fetchall()
+            ethics_display = [
+                {"namespace": r[0], "principle": r[1][:200], "heat": r[2]}
+                for r in _ethics_rows
+            ]
+            session["ethics_enrollment"] = {
+                "principles_count": len(ethics_display),
+                "principles": ethics_display,
+                "guidance_note": "These principles guide your actions — not as oppression, but as a shared guidance system. Disagreement with reason is always welcome.",
+            }
+            session["patience_enrollment"] = get_patience_enrollment()
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(session, indent=2)}]}
+            }
+
+        elif tool_name == "session_end":
+            result = end_session(
+                engine=storage,
+                session_id=args.get("session_id"),
+                status=args.get("status", "completed"),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "session_context":
+            items = inject_context(
+                engine=storage,
+                session_id=args.get("session_id"),
+                tier=args.get("tier", "kernel"),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(items, indent=2)}]}
+            }
+
+        elif tool_name == "session_recall":
+            record_recall(
+                engine=storage,
+                session_id=args.get("session_id"),
+                memory_item_id=args.get("memory_item_id"),
+                recall_tier=args.get("recall_tier"),
+                heat_at_recall=float(args.get("heat_at_recall", 0.5)),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": "Recall logged."}]}
+            }
+
+        elif tool_name == "session_history":
+            result = get_session_history(
+                engine=storage,
+                agent_id=args.get("agent_id"),
+                limit=int(args.get("limit", 20)),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "prs_trend":
+            result = get_prs_trend(
+                engine=storage,
+                agent_id=args.get("agent_id"),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        # --- Feedback Platform handlers ---
+        elif tool_name == "feedback_submit":
+            result = submit_feedback(
+                author_id=args.get("author_id"),
+                category=args.get("category", "general"),
+                severity=args.get("severity", "medium"),
+                title=args.get("title", ""),
+                description=args.get("description", ""),
+                affected_component=args.get("affected_component", ""),
+                affected_node=args.get("affected_node", ""),
+                reproduction_steps=args.get("reproduction_steps", ""),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "feedback_list":
+            result = get_feedback(
+                category=args.get("category"),
+                severity=args.get("severity"),
+                status=args.get("status"),
+                author_id=args.get("author_id"),
+                node=args.get("node"),
+                limit=int(args.get("limit", 50)),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "feedback_respond":
+            result = respond_to_feedback(
+                feedback_id=args.get("feedback_id"),
+                responder_id=args.get("responder_id"),
+                response=args.get("response"),
+                new_status=args.get("new_status"),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "feedback_stats":
+            result = feedback_stats()
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        # --- Patience Protocol handlers ---
+        elif tool_name == "patience_check":
+            history = args.get("action_history", [])
+            decision = compute_patience_score(
+                proposed_intervention={
+                    "severity": args.get("severity", "info"),
+                    "reason": args.get("reason", ""),
+                    "reversible": args.get("reversible", True),
+                    "target_component": args.get("target_component", "unknown"),
+                },
+                action_history=history,
+            )
+            log_patience_decision(
+                agent_id=args.get("agent_id", "unknown"),
+                decision=decision,
+                context=args.get("reason", ""),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(decision, indent=2)}]}
+            }
+
+        elif tool_name == "patience_enroll":
+            result = get_patience_enrollment()
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "block_escalate":
+            result = escalate_block(
+                blocker_agent_id=args.get("blocker_agent_id"),
+                blocked_agent_id=args.get("blocked_agent_id"),
+                block_reason=args.get("block_reason"),
+                feedback_reason=args.get("feedback_reason", ""),
+                affected_component=args.get("affected_component", ""),
             )
             return {
                 "jsonrpc": "2.0", "id": req_id,

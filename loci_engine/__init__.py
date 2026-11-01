@@ -13,6 +13,21 @@ from .glassbox import (
     glassbox_verify_chain,
     glassbox_stats,
 )
+from .session_continuity import (
+    start_session,
+    end_session,
+    compute_ldce_tiers,
+    inject_context,
+    record_recall,
+    get_session_history,
+    get_prs_trend,
+)
+from .feedback_platform import (
+    submit_feedback,
+    get_feedback,
+    respond_to_feedback,
+    feedback_stats,
+)
 
 __all__ = [
     "DeductiveIdentityResolver",
@@ -23,4 +38,15 @@ __all__ = [
     "glassbox_recall",
     "glassbox_verify_chain",
     "glassbox_stats",
+    "start_session",
+    "end_session",
+    "compute_ldce_tiers",
+    "inject_context",
+    "record_recall",
+    "get_session_history",
+    "get_prs_trend",
+    "submit_feedback",
+    "get_feedback",
+    "respond_to_feedback",
+    "feedback_stats",
 ]

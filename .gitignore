@@ -22,3 +22,6 @@ spark-warehouse/
 
 context2.db*
 glassbox_ledger.jsonl*
+feedback_ledger.jsonl*
+agent_registry.json
+.venv/
