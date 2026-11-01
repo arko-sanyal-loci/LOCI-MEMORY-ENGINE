@@ -55,6 +55,12 @@ from loci_engine.patience_protocol import (
     log_patience_decision,
     escalate_block,
 )
+from loci_engine.gpu_governor import (
+    get_full_gpu_status,
+    allocate_task as gpu_allocate_task,
+    complete_task as gpu_complete_task,
+    get_model_allocation_plan,
+)
 
 storage = StorageEngine()
 loop_guard = LoopGuardCircuitBreaker(threshold=3)
@@ -395,6 +401,49 @@ MCP_TOOLS = [
                 "affected_component": {"type": "string", "description": "What component is affected"}
             },
             "required": ["blocker_agent_id", "blocked_agent_id", "block_reason"]
+        }
+    },
+    # --- GPU Governor ---
+    {
+        "name": "gpu_status",
+        "description": "Full GPU status — both NVIDIA RTX 5060 Ti and Intel Arc B70 Pro Sparkle. Shows thermals, power, VRAM, safety margins, active tasks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "gpu_allocate",
+        "description": "Allocate a task to a GPU respecting 5% safety margins. Tasks queue instead of piling on.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_name": {"type": "string"},
+                "vram_estimate_mb": {"type": "integer", "description": "Estimated VRAM needed in MB"},
+                "preferred_gpu": {"type": "string", "enum": ["nvidia", "intel_arc"], "description": "Preferred GPU (optional — auto-selects if omitted)"},
+                "agent_id": {"type": "string"}
+            },
+            "required": ["task_name", "vram_estimate_mb"]
+        }
+    },
+    {
+        "name": "gpu_complete",
+        "description": "Mark a GPU task as complete — frees capacity and dequeues waiting tasks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_name": {"type": "string"},
+                "gpu": {"type": "string"}
+            },
+            "required": ["task_name"]
+        }
+    },
+    {
+        "name": "gpu_plan",
+        "description": "Recommended model allocation plan across both GPUs for maximum efficiency with safety margins.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
         }
     }
 ]
@@ -797,6 +846,43 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
                 feedback_reason=args.get("feedback_reason", ""),
                 affected_component=args.get("affected_component", ""),
             )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        # --- GPU Governor handlers ---
+        elif tool_name == "gpu_status":
+            result = get_full_gpu_status()
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "gpu_allocate":
+            result = gpu_allocate_task(
+                task_name=args.get("task_name"),
+                vram_estimate_mb=int(args.get("vram_estimate_mb", 0)),
+                preferred_gpu=args.get("preferred_gpu"),
+                agent_id=args.get("agent_id", "unknown"),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "gpu_complete":
+            result = gpu_complete_task(
+                task_name=args.get("task_name"),
+                gpu=args.get("gpu", ""),
+            )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "gpu_plan":
+            result = get_model_allocation_plan()
             return {
                 "jsonrpc": "2.0", "id": req_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}

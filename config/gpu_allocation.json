@@ -19,7 +19,7 @@
         }
       ]
     },
-    "intel_arc_b580pro_sparkle": {
+    "intel_arc_b70pro_sparkle": {
       "pci": "04:00.0",
       "drm": "card2",
       "render": "renderD129",
@@ -28,6 +28,7 @@
       "vram_available_mb": 32512,
       "driver": "xe",
       "compute": "level_zero_sycl",
+      "chip": "Battlemage G31",
       "role": "heavy_inference_and_comms",
       "notes": "Requires intel-opencl-icd package. 32GB enables large context or bigger models.",
       "allocated_models": [
@@ -66,7 +67,7 @@
     },
     "arc_agent": {
       "type": "local_model",
-      "gpu": "intel_arc_b580pro_sparkle",
+      "gpu": "intel_arc_b70pro_sparkle",
       "endpoint": "ollama:localhost:11434",
       "vram_mb": 0,
       "role": "pending_intel_compute_setup",
