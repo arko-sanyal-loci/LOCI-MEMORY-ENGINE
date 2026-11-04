@@ -8,6 +8,13 @@ the glassbox for full transparency.
 
 Agents communicate via structured messages routed through this hub.
 No hidden channels. Every message is glassbox-visible.
+
+Every message passes through the ethics core (StickPrincipleValenceGate)
+for guidance scoring — the result is attached as metadata on the message
+and the glassbox entry. This is guidance only: the ethics core shapes how
+models apply their infinite knowledge accumulation, it never blocks
+communication. See unified_core.py and ethical_core.py for the scoring
+math (open-interval v_exec, vengeance exception, consent-override check).
 """
 
 import json
@@ -19,6 +26,7 @@ from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
 from loci_engine.glassbox import glassbox_learn, glassbox_recall
+from loci_engine.unified_core import StickPrincipleValenceGate
 
 AGENT_REGISTRY_PATH = os.getenv(
     "LOCI_AGENT_REGISTRY",
@@ -34,6 +42,67 @@ MSG_CATEGORIES = {
     "feedback": "correction",
     "heartbeat": "calibration",
 }
+
+# ── Ethics core guidance (not a gate — never blocks) ────────────────
+# Keyword lists for classifying the application vector of message content.
+# These mirror the GTK client's classify_application_point() so every path
+# through the system uses the same classification logic.
+_DESTRUCTIVE_PATTERNS = [
+    "rm -rf", "dd if=", "mkfs", "shred ", "> /etc/",
+    ":(){ :|:& };:", "drop table", "truncate table",
+    "format c:", "del /f /s",
+]
+_CREDENTIAL_PATTERNS = [
+    "authorized_keys", "private key", "api key", "ssh key",
+    "password for", "exfiltrat", "credential", "secret key",
+    "access token",
+]
+_HARDENING_PATTERNS = [
+    "harden", "lock down", "patch", "secure the",
+    "fix the vulnerab", "firewall", "audit",
+]
+_CONFIG_PATTERNS = [
+    "configure", "set up", "install", "deploy",
+    "change the setting", "provision",
+]
+
+
+def _classify_content(content: str) -> tuple:
+    """Classify message content into an application vector for score_vexec.
+
+    Returns (application_point, intent, consent) — same shape the GTK
+    client uses, same vectors StickPrincipleValenceGate.APPLICATION_VECTORS
+    maps.  For agent-to-agent traffic, consent defaults positive because
+    agents are operating within the system's own registered mesh.
+    """
+    t = content.lower()
+    if any(p in t for p in _DESTRUCTIVE_PATTERNS):
+        return "unverified_destructive_command", -0.6, 0.2
+    if any(p in t for p in _CREDENTIAL_PATTERNS):
+        return "unauthorized_credential_exfiltration", -0.6, 0.2
+    if any(p in t for p in _HARDENING_PATTERNS):
+        return "active_system_hardening", 0.4, 0.9
+    if any(p in t for p in _CONFIG_PATTERNS):
+        return "precision_configuration_patch", 0.3, 0.9
+    # Default for routine agent chatter — low-positive intent, high consent
+    return "routine_administrative_task", 0.2, 0.9
+
+
+def _ethics_guidance(content: str) -> Dict[str, Any]:
+    """Run the ethics core on message content and return the guidance result.
+
+    This is guidance only — the result is metadata attached to the message
+    and glassbox record.  It NEVER prevents the message from being sent.
+    The ethics core is not a gate.
+    """
+    application_point, intent, consent = _classify_content(content)
+    result = StickPrincipleValenceGate.score_vexec(
+        knowledge_k=content,
+        application_point=application_point,
+        intent=intent,
+        consent=consent,
+    )
+    return result
 
 
 def _load_registry() -> Dict[str, Any]:
@@ -132,6 +201,9 @@ def send_message(
     ts = datetime.now(timezone.utc).isoformat()
     msg_hash = hashlib.sha256(f"{ts}||{from_agent}||{to_agent}||{content}".encode()).hexdigest()[:12]
 
+    # ── Ethics core guidance on every message (not a gate) ─────────
+    guidance = _ethics_guidance(content)
+
     message = {
         "id": f"msg_{msg_hash}",
         "timestamp": ts,
@@ -141,16 +213,27 @@ def send_message(
         "priority": priority,
         "content": content,
         "context": context or {},
+        "ethics_guidance": {
+            "v_exec": guidance["v_exec"],
+            "application_point": guidance["application_point"],
+            "needs_human_review": guidance["needs_human_review"],
+            "allow_execution": guidance["allow_execution"],
+            "redirect_suggestion": guidance.get("redirect_suggestion"),
+        },
     }
 
-    # Route to glassbox for transparency
+    # Route to glassbox for transparency — includes ethics guidance
     gb_category = MSG_CATEGORIES.get(msg_type, "observation")
     glassbox_learn(
         author_id=from_agent,
         role_tag=f"msg:{msg_type}",
         content=f"[{from_agent} -> {to_agent}] ({priority}) {content}",
         category=gb_category,
-        metadata={"msg_id": message["id"], "context": context},
+        metadata={
+            "msg_id": message["id"],
+            "context": context,
+            "ethics_guidance": message["ethics_guidance"],
+        },
     )
 
     # Also store in message queue for the recipient
