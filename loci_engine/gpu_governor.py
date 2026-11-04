@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
 """
-LOCI GPU Governor — Seamless Dual-GPU Routing & Safety
+LOCI GPU Governor — Multi-GPU Safety & Allocation
 
-Manages the dual-GPU topology (NVIDIA RTX 5060 Ti + Intel Arc B70 Pro Sparkle)
-with 5% safety margins and seamless model routing across both GPUs.
+Manages the dual-GPU topology (NVIDIA RTX 5060 Ti + Intel Arc B580 Pro)
+with a 5% safety margin over rated limits to ensure longevity. Prevents
+task pileup by tracking per-GPU load and queuing when capacity is reached.
 
 GPU Topology:
   GPU 0: NVIDIA RTX 5060 Ti — 16 GB VRAM, 180W TDP, CUDA 13.2
     - card1, renderD128, PCIe 06:00.0
-    - Ollama primary via CUDA (:11434)
+    - Primary compute: Ollama models, CUDA workloads
   GPU 1: Intel Arc B70 Pro Sparkle — 32 GB VRAM, 330W TDP (Battlemage G31)
     - card2, renderD129, PCIe 04:00.0
-    - Ollama secondary via Vulkan (:11435)
-    - Requires: render group membership + Vulkan ICD
-
-Routing Strategy:
-  - Models ≤14B → NVIDIA (fast CUDA, 16GB fits two 7B or one 14B)
-  - Models >14B or NVIDIA full → Arc (32GB VRAM, Vulkan backend)
-  - Both saturated → queue (never pile)
+    - Active: llama.cpp SYCL backend, loci-arc-35b (qwen3.6-35b-a3b MoE)
 
 Safety Margins (5% below rated limits):
-  NVIDIA: 171W max draw, 85°C thermal limit, 15495 MB VRAM
-  Arc:    313W max draw, 90°C thermal limit, 31129 MB VRAM
+  NVIDIA: 171W max draw (180W * 0.95), 85°C thermal limit (90°C * ~0.94)
+  Arc:    313W max draw (330W * 0.95), 90°C thermal limit (95°C * ~0.95)
+  VRAM:   95% max allocation per GPU — always keep 5% free for system overhead
 """
 
 import json
@@ -29,7 +25,7 @@ import os
 import subprocess
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # GPU Hardware Definitions
@@ -69,25 +65,10 @@ GPU_SPECS = {
 }
 
 # ---------------------------------------------------------------------------
-# Ollama Endpoints — one per GPU
-# ---------------------------------------------------------------------------
-
-OLLAMA_ENDPOINTS = {
-    "nvidia_rtx_5060_ti": "http://127.0.0.1:11434",
-    "intel_arc_b580_pro": "http://127.0.0.1:11435",
-}
-
-MODEL_SIZE_THRESHOLDS = {
-    "small": 8_000,   # ≤8GB → fits NVIDIA alongside another model
-    "medium": 14_000, # ≤14GB → NVIDIA can handle solo
-    "large": 32_000,  # ≤32GB → Arc only (or split)
-}
-
-# ---------------------------------------------------------------------------
 # Task Queue — prevent pileup
 # ---------------------------------------------------------------------------
 
-MAX_CONCURRENT_TASKS_PER_GPU = 2
+MAX_CONCURRENT_TASKS_PER_GPU = 2  # Don't pile more than 2 tasks per GPU
 TASK_QUEUE: List[Dict[str, Any]] = []
 ACTIVE_TASKS: Dict[str, List[Dict[str, Any]]] = {
     "nvidia_rtx_5060_ti": [],
@@ -97,22 +78,6 @@ ACTIVE_TASKS: Dict[str, List[Dict[str, Any]]] = {
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _check_ollama_endpoint(url: str) -> bool:
-    """Quick connectivity check for an Ollama instance."""
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"{url}/api/tags"],
-            capture_output=True, text=True, timeout=3,
-        )
-        return result.stdout.strip() == "200"
-    except Exception:
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -206,23 +171,14 @@ def get_intel_arc_status() -> Dict[str, Any]:
         status["thermal_headroom_c"] = None
         status["power_state"] = "D3hot (suspended — no compute runtime active)"
 
-    # Check compute readiness: Vulkan ICD + render group membership
-    vulkan_icd_ok = os.path.exists("/usr/share/vulkan/icd.d/intel_icd.json")
-    render_node_ok = os.access("/dev/dri/renderD129", os.R_OK | os.W_OK)
-    ollama_arc_reachable = _check_ollama_endpoint(OLLAMA_ENDPOINTS["intel_arc_b580_pro"])
-    status["vulkan_icd"] = vulkan_icd_ok
-    status["render_node_accessible"] = render_node_ok
-    status["ollama_reachable"] = ollama_arc_reachable
-    status["compute_ready"] = vulkan_icd_ok and render_node_ok and ollama_arc_reachable
+    # Check if compute runtime is available
+    status["compute_ready"] = os.path.exists("/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so")
     if not status["compute_ready"]:
-        missing = []
-        if not vulkan_icd_ok:
-            missing.append("sudo apt-get install -y mesa-vulkan-drivers")
-        if not render_node_ok:
-            missing.append("sudo usermod -aG render,video arko-sanyal  # then re-login")
-        if not ollama_arc_reachable:
-            missing.append("sudo systemctl start loci-ollama-arc  # Ollama on :11435")
-        status["setup_needed"] = missing
+        status["setup_needed"] = [
+            "sudo apt-get install -y intel-opencl-icd intel-gpu-tools",
+            f"sudo usermod -aG render,video {os.getenv('USER', 'arko-sanyal')}",
+            "# Then log out and back in for group membership to take effect",
+        ]
 
     status["within_safety_margin"] = True  # Can't measure load until compute is active
 
@@ -254,63 +210,6 @@ def get_full_gpu_status() -> Dict[str, Any]:
             "max_concurrent_per_gpu": MAX_CONCURRENT_TASKS_PER_GPU,
             "principle": "5% below rated limits for longevity. Tasks queue instead of piling on.",
         },
-    }
-
-
-# ---------------------------------------------------------------------------
-# Seamless Routing — pick the best GPU for a given model/task
-# ---------------------------------------------------------------------------
-
-def route_inference(model: str, vram_estimate_mb: int = 0) -> Dict[str, Any]:
-    """Pick the best Ollama endpoint for a model based on GPU state.
-
-    Returns the endpoint URL and GPU key, or a queue notice if both are full.
-    Routing priority:
-      1. If model is already loaded on a GPU, stay there (no reload penalty)
-      2. If VRAM estimate ≤ NVIDIA headroom and NVIDIA accepting → NVIDIA
-      3. If Arc compute ready and Arc has headroom → Arc
-      4. Queue
-    """
-    nvidia = get_nvidia_status()
-    arc = get_intel_arc_status()
-
-    nvidia_ok = (
-        nvidia.get("can_accept_task", False)
-        and nvidia.get("within_safety_margin", False)
-        and (vram_estimate_mb == 0 or nvidia.get("vram_headroom_mb", 0) >= vram_estimate_mb)
-    )
-    arc_ok = (
-        arc.get("compute_ready", False)
-        and arc.get("can_accept_task", False)
-    )
-
-    if nvidia_ok:
-        return {
-            "gpu": "nvidia_rtx_5060_ti",
-            "endpoint": OLLAMA_ENDPOINTS["nvidia_rtx_5060_ti"],
-            "reason": "NVIDIA has headroom",
-        }
-
-    if arc_ok:
-        return {
-            "gpu": "intel_arc_b580_pro",
-            "endpoint": OLLAMA_ENDPOINTS["intel_arc_b580_pro"],
-            "reason": "Routed to Arc — NVIDIA at capacity or insufficient VRAM",
-        }
-
-    # Fallback: NVIDIA even if tight (it's the only one with compute for sure)
-    if nvidia.get("can_accept_task", False):
-        return {
-            "gpu": "nvidia_rtx_5060_ti",
-            "endpoint": OLLAMA_ENDPOINTS["nvidia_rtx_5060_ti"],
-            "reason": "Fallback to NVIDIA — Arc compute not ready",
-        }
-
-    return {
-        "gpu": None,
-        "endpoint": None,
-        "reason": "Both GPUs at capacity. Task should be queued.",
-        "queue": True,
     }
 
 
@@ -420,7 +319,7 @@ def get_model_allocation_plan() -> Dict[str, Any]:
         "nvidia_rtx_5060_ti": {
             "safe_vram_mb": nvidia_spec["safe_vram_mb"],
             "recommended_models": [
-                {"model": "loci-agent-14b", "vram_mb": 9000, "role": "Deep reasoning, CARD routing"},
+                {"model": "loci-rtx-14b", "vram_mb": 9000, "role": "Deep reasoning, CARD routing"},
                 {"model": "loci-agent (7b)", "vram_mb": 5000, "role": "Fast classification, entity extraction"},
             ],
             "total_allocated_mb": 14000,
@@ -428,14 +327,12 @@ def get_model_allocation_plan() -> Dict[str, Any]:
         },
         "intel_arc_b580_pro": {
             "safe_vram_mb": arc_spec["safe_vram_mb"],
-            "ollama_endpoint": OLLAMA_ENDPOINTS["intel_arc_b580_pro"],
-            "backend": "Vulkan (ANV/Mesa)",
             "recommended_models": [
-                {"model": "loci-agent-14b", "vram_mb": 9000, "role": "Overflow from NVIDIA, parallel 14B inference"},
-                {"model": "large-model (70b-q4)", "vram_mb": 25000, "role": "Deep research, escalation chain endpoint"},
+                {"model": "large-model (70b-q4)", "vram_mb": 25000, "role": "Deep research, escalation chain endpoint", "status": "pending_compute_runtime"},
             ],
-            "total_allocated_mb": 9000,
-            "headroom_mb": arc_spec["safe_vram_mb"] - 9000,
+            "total_allocated_mb": 25000,
+            "headroom_mb": arc_spec["safe_vram_mb"] - 25000,
+            "prerequisite": "Install intel-opencl-icd + level-zero for compute",
         },
         "policy": {
             "safety_margin_pct": 5,
