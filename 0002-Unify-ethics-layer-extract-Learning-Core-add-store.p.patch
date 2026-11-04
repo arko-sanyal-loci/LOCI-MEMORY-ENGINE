@@ -1,0 +1,3001 @@
+From 80b6908b049069749bd72cdc37d9e5c47e2da050 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 4 Nov 2026 19:48:14 +0600
+Subject: [PATCH 2/3] Unify ethics layer: extract Learning Core, add store.py,
+ integrate ethics/aethel_council/threads
+
+Splits the A1/A2/A3 evidence/heat math out of ethical_core.py into a new
+heat.py module (the Learning Core) so there is one implementation of the
+hyperbolic open-interval law, not a duplicate per consumer.
+ethical_core.py's compute_evidence()/compute_heat() now delegate to it;
+all existing callers (unified_core.py, etc.) are unaffected.
+
+Adds store.py, a real entity-persistence layer on the same context2.db
+schema storage.py already defines. Trust-pattern heat is always
+re-derived from the full event history rather than cached as a drifting
+mutable scalar, matching the existing scar-heat discipline in ethics.py.
+
+Integrates three modules from a parallel session's work that depended on
+heat.py/store.py existing: ethics.py (observe-only valence/conflict/
+trust/provenance layer), aethel_council.py (level-platform disagreement
+resolution registry), and threads.py (commit-trailer routing over the
+same evidence machinery).
+
+Adds 25 tests (test_heat.py, test_store.py, test_ethics.py) covering the
+new modules and the ethical_core.py delegation. Full suite: 145/145
+passing, no regressions.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MV4Gz29XnVWE78geBBsguZ
+---
+ loci_engine/aethel_council.py |  213 +++++
+ loci_engine/ethical_core.py   |   90 +-
+ loci_engine/ethics.py         | 1480 +++++++++++++++++++++++++++++++++
+ loci_engine/heat.py           |  204 +++++
+ loci_engine/store.py          |  190 +++++
+ loci_engine/threads.py        |  400 +++++++++
+ tests/test_ethics.py          |  118 +++
+ tests/test_heat.py            |   97 +++
+ tests/test_store.py           |   64 ++
+ 9 files changed, 2803 insertions(+), 53 deletions(-)
+ create mode 100644 loci_engine/aethel_council.py
+ create mode 100644 loci_engine/ethics.py
+ create mode 100644 loci_engine/heat.py
+ create mode 100644 loci_engine/store.py
+ create mode 100644 loci_engine/threads.py
+ create mode 100644 tests/test_ethics.py
+ create mode 100644 tests/test_heat.py
+ create mode 100644 tests/test_store.py
+
+diff --git a/loci_engine/aethel_council.py b/loci_engine/aethel_council.py
+new file mode 100644
+index 0000000..740c059
+--- /dev/null
++++ b/loci_engine/aethel_council.py
+@@ -0,0 +1,213 @@
++"""Aethel Council — the standing, level platform where humans, agents, and
++AIs participate as equal members in resolving disagreement, named directly
++by the user tonight: "Aethel OS is the council where all stand on a level
++platform — humans, agents, AIs — for growth."
++
++**What "level" means, confirmed with the user before building, not guessed:**
++"Confidence and ethics are not negotiable, but evidence always makes
++everyone heard, and no preemptive decision without every single entity's
++input." Two distinct things, kept distinct here:
++
++1. **Standing is equal, unconditionally.** A human, an agent, and an AI
++   register as members the same way, through the same function, with no
++   type-based privilege. `member_kind` is recorded for transparency (so a
++   reader can see who's who), never for ranking — nothing in this module
++   reads `member_kind` to decide whose input counts more.
++2. **Confidence and ethics are NOT put to a vote.** This module has no
++   voting mechanism at all, deliberately. It does not and cannot move
++   `METHOD_TRUST_CEILING`, the open-interval laws, mercy/root-cause
++   restoration, or any other principle — those are fixed regardless of
++   how many council members agree or disagree. What this module gates is
++   narrower and procedural: whether a topic's conclusion may be recorded
++   as resolved BEFORE every currently-registered member has given input.
++   That is a completeness check on WHO HAS BEEN HEARD, not a referendum
++   on WHAT IS TRUE — truth here is still decided by the existing
++   evidence machinery (`ethics.data_completeness_check`,
++   `goodwill.get_method_trust`), which this module calls into rather
++   than replacing.
++
++**Standing body, not ad hoc** — confirmed with the user: membership is a
++persistent registry (`register_council_member`), independent of any one
++disagreement, the same way `agent_memory.py`'s logs persist independent of
++any one session. A council seat, once registered, stays registered across
++every future topic unless explicitly removed.
++
++**Relationship to existing machinery, stated plainly so nothing here is
++mistaken for a duplicate:**
++- `ethics.record_evidence_source`/`data_completeness_check` already
++  handles per-topic evidence and dissent among SOURCES. This module adds
++  the membership layer underneath it: a council member is eligible to
++  register evidence sources and participate in dissent resolution: this
++  module does not re-implement evidence tracking, it gates on whether the
++  right PEOPLE (in the broadest sense) have had the chance to.
++- `agent_memory.py` is how an agent's own activity persists and feeds
++  into the core ledger. An agent that is ALSO a council member can have
++  both: its activity log (what it did) and its council seat (its standing
++  to weigh in on disagreements) are separate, composable things.
++- `goodwill.register_method_version`/`current_best_method` versions
++  METHODS (ways of doing something). This module does not version facts
++  or methods itself — `has_every_member_been_heard` is a yes/no
++  completeness gate a caller uses before trusting any conclusion
++  (including a `current_best_method` read, or a `data_completeness_check`
++  result) as representative of the whole council, not a replacement for
++  either.
++
++**Honest about what this module does NOT do:** it cannot verify a
++member's input was genuine, thoughtful, or correct — only that something
++was recorded under their member_id for the topic. It cannot detect a
++member deliberately staying silent to block consensus, nor force
++participation. "Heard" means "registered input exists," nothing more.
++"""
++from __future__ import annotations
++
++import time
++from typing import Any, Optional
++
++from loci_engine.ethics import ProvenanceLedger
++
++COUNCIL_MEMBER_ROLE_TAG = "aethel_council_member"
++COUNCIL_INPUT_ROLE_TAG = "aethel_council_input"
++COUNCIL_MEMBER_REMOVED_ROLE_TAG = "aethel_council_member_removed"
++
++#: Descriptive only, per the module docstring's point #1 — recorded for
++#: transparency, never read anywhere in this module to weight or rank a
++#: member's standing or input.
++VALID_MEMBER_KINDS = ("human", "agent", "ai")
++
++
++def register_council_member(
++    ledger: ProvenanceLedger,
++    member_id: str,
++    member_kind: str,
++    now: float | None = None,
++) -> dict:
++    """Adds `member_id` to the standing council registry, at full, equal
++    standing — the same call shape regardless of whether `member_kind` is
++    "human", "agent", or "ai". Calling this again for an already-registered
++    member_id is not an error (idempotent re-registration, e.g. an agent
++    restarting and re-asserting its seat); it does not duplicate standing,
++    `list_council_members` dedupes by member_id, keeping the member active.
++    """
++    if member_kind not in VALID_MEMBER_KINDS:
++        raise ValueError(f"member_kind must be one of {VALID_MEMBER_KINDS}, got {member_kind!r}")
++    now = time.time() if now is None else now
++    entry_hash = ledger.append(
++        author_id=member_id,
++        role_tag=COUNCIL_MEMBER_ROLE_TAG,
++        payload={"member_id": member_id, "member_kind": member_kind, "t_j": now},
++        now=now,
++    )
++    return {"member_id": member_id, "member_kind": member_kind, "entry_hash": entry_hash}
++
++
++def remove_council_member(ledger: ProvenanceLedger, member_id: str, reason: str, now: float | None = None) -> dict:
++    """Removes standing — an explicit, logged act (never a silent drop),
++    so a later reader can see WHEN and WHY a seat was vacated, not just
++    that it's absent. A removed member is excluded from
++    `has_every_member_been_heard`'s requirement going forward, but every
++    input they already gave stays on the ledger, untouched — removal
++    affects future gating, never past record.
++    """
++    now = time.time() if now is None else now
++    entry_hash = ledger.append(
++        author_id=member_id,
++        role_tag=COUNCIL_MEMBER_REMOVED_ROLE_TAG,
++        payload={"member_id": member_id, "reason": reason, "t_j": now},
++        now=now,
++    )
++    return {"member_id": member_id, "reason": reason, "entry_hash": entry_hash}
++
++
++def list_council_members(ledger: ProvenanceLedger) -> list[dict]:
++    """Every currently-active member (registered, not since removed),
++    oldest-registered first — never reordered by kind or by anything else,
++    matching this module's own "no ranking by type" principle."""
++    registered: dict[str, dict] = {}
++    removed: set[str] = set()
++    for e in ledger._entries:
++        if e.role_tag == COUNCIL_MEMBER_ROLE_TAG and isinstance(e.payload, dict):
++            registered[e.payload["member_id"]] = {
++                "member_id": e.payload["member_id"],
++                "member_kind": e.payload["member_kind"],
++                "registered_at": e.payload["t_j"],
++            }
++        elif e.role_tag == COUNCIL_MEMBER_REMOVED_ROLE_TAG and isinstance(e.payload, dict):
++            removed.add(e.payload["member_id"])
++    return [m for mid, m in sorted(registered.items(), key=lambda kv: kv[1]["registered_at"]) if mid not in removed]
++
++
++def record_council_input(
++    ledger: ProvenanceLedger,
++    topic: str,
++    member_id: str,
++    input_text: str,
++    now: float | None = None,
++) -> dict:
++    """A registered member's input on `topic` — never refused, never
++    scored, never weighted here (same mercy-aligned, non-judging posture
++    as `agent_memory.record_agent_activity` and
++    `ethics.record_evidence_source`). This is deliberately a separate,
++    lighter record than a full evidence source: a council member can
++    register input on a topic ("I weighed in, here is what I said")
++    without that input needing to meet `record_evidence_source`'s own
++    requirements (e.g. a passing communication_health_check) — those
++    stay the requirement for something being treated as formal EVIDENCE;
++    this is the lower bar of "did this member get the chance to speak,
++    and did they."
++
++    Does not require `member_id` to currently be an active council member
++    — input from a since-removed or never-formally-registered id is still
++    recorded (the ledger does not lie about what was said), but
++    `has_every_member_been_heard` only counts input from CURRENTLY active
++    members toward its completeness gate.
++    """
++    now = time.time() if now is None else now
++    entry_hash = ledger.append(
++        author_id=member_id,
++        role_tag=COUNCIL_INPUT_ROLE_TAG,
++        payload={"topic": topic, "member_id": member_id, "input_text": input_text, "t_j": now},
++        now=now,
++    )
++    return {"topic": topic, "member_id": member_id, "entry_hash": entry_hash}
++
++
++def has_every_member_been_heard(ledger: ProvenanceLedger, topic: str) -> dict:
++    """THE GATE: "no preemptive decision without every single entity's
++    input," enforced as a real, checkable yes/no — not a reminder. Returns
++    `all_heard: True` only if every CURRENTLY active council member has at
++    least one `record_council_input` entry for this exact `topic`.
++
++    This function makes NO claim about what conclusion the topic should
++    reach, and does not and cannot touch confidence/ethics/the open-
++    interval laws — per the user's own distinction, those stay fixed
++    regardless of this gate's result. This gate answers one question only:
++    has everyone been given a real chance to weigh in, as recorded.
++
++    `missing_members` names exactly who hasn't spoken yet, so a caller
++    knows who to go ask — the same actionable-gap posture as
++    `record_conclusion`'s `unacknowledged_entries` and
++    `data_completeness_check`'s `voiceless_parties`, not a bare boolean
++    with no path forward.
++    """
++    active_members = {m["member_id"] for m in list_council_members(ledger)}
++    spoken = {
++        e.payload["member_id"]
++        for e in ledger._entries
++        if e.role_tag == COUNCIL_INPUT_ROLE_TAG
++        and isinstance(e.payload, dict)
++        and e.payload.get("topic") == topic
++    }
++    missing = sorted(active_members - spoken)
++    return {
++        "topic": topic,
++        "all_heard": len(missing) == 0,
++        "active_member_count": len(active_members),
++        "missing_members": missing,
++        "note": (
++            "all_heard reflects only CURRENTLY active registered members "
++            "and only whether input WAS recorded, not its quality or "
++            "genuineness. It gates who has been heard, never what the "
++            "conclusion should be -- confidence and ethics are not decided "
++            "by this function or by any vote."
++        ),
++    }
+diff --git a/loci_engine/ethical_core.py b/loci_engine/ethical_core.py
+index 79a7e2c..ea574d7 100644
+--- a/loci_engine/ethical_core.py
++++ b/loci_engine/ethical_core.py
+@@ -82,6 +82,17 @@ OPEN GAPS (intentionally uncalibrated — same honest status as clinical pain sc
+ 
+ RELATED MODULES
+ ---------------
++  heat.py            — Learning Core. A1 (compute_evidence) and A2/A3
++                       (compute_heat) are DEFINED there as evidence_
++                       accumulation()/evidence_heat() — this module
++                       re-exports them under their original names below
++                       so every ethics-specific gate in this file keeps
++                       working unchanged. There is one copy of this math
++                       in the codebase, not two.
++  ethics.py          — the newer observe-only valence/conflict/trust/
++                       provenance layer. Reuses heat.py directly rather
++                       than this module; this module stays the substrate
++                       the older ethics-specific gates below are built on.
+   unified_core.py    — StickPrincipleValenceGate (B3 v_exec), NonOffsettingGoodwillLedger (B6),
+                        DynamicTokenCoupledSnippetEngine (B12/C3), DeductiveIdentityResolver
+   card_router.py     — CardRouter (CARD thermal gradient, cosine conduction — A2 shape)
+@@ -89,11 +100,15 @@ RELATED MODULES
+   storage.py         — StorageEngine (memory_item table: heat, alpha, era fields)
+ """
+ 
+-import math
+ import hashlib
++import math
+ from dataclasses import dataclass, field
+ from typing import Any, Dict, List, Literal, Optional
+ 
++from loci_engine.heat import MEMORY_CLASSES, MemoryClass  # re-exported for existing callers
++from loci_engine.heat import evidence_accumulation as _evidence_accumulation
++from loci_engine.heat import evidence_heat as _evidence_heat
++
+ 
+ # ===========================================================================
+ # CLUSTER A — CORE MATHEMATICAL FORMULAS
+@@ -131,13 +146,15 @@ def compute_evidence(
+     Returns
+     -------
+     float — accumulated evidence E_k(t) ≥ 0.
++
++    Implementation
++    --------------
++    Delegates to heat.evidence_accumulation() — the Learning Core function
++    this formula was extracted into. Kept here under its original name so
++    every call site below (and in unified_core.py) is unaffected.
+     """
+-    total = 0.0
+-    for obs in observations:
+-        if obs["t_j"] <= t:
+-            dt = max(0.0, t - obs["t_j"])
+-            total += (obs["r_j"] * obs["w_j"]) / (1.0 + dt / tau_k)
+-    return total
++    events = [(obs["t_j"], obs["r_j"], obs["w_j"]) for obs in observations]
++    return _evidence_accumulation(events, now=t, tau=tau_k)
+ 
+ 
+ def compute_heat(evidence: float, alpha_k: float, beta: float = 1.0) -> float:
+@@ -173,16 +190,14 @@ def compute_heat(evidence: float, alpha_k: float, beta: float = 1.0) -> float:
+     Raises
+     ------
+     ValueError if alpha_k is not strictly inside (0, 1).
++
++    Implementation
++    --------------
++    Delegates to heat.evidence_heat() — the Learning Core function this
++    formula was extracted into. Kept here under its original name so
++    every call site below (and in unified_core.py) is unaffected.
+     """
+-    if not (0.0 < alpha_k < 1.0):
+-        raise ValueError(
+-            f"alpha_k must be strictly inside (0, 1) to preserve the open-interval "
+-            f"invariant (A3); got {alpha_k}"
+-        )
+-    raw = alpha_k + (1.0 - alpha_k) * (1.0 - math.exp(-beta * max(0.0, evidence)))
+-    # Nudge away from the bounds by the smallest representable increment so
+-    # the open-interval invariant holds even at evidence = 0 or evidence = ∞.
+-    return max(alpha_k + 1e-9, min(1.0 - 1e-9, raw))
++    return _evidence_heat(evidence, alpha=alpha_k, beta=beta)
+ 
+ 
+ def provenance_hash(ts: str, author_id: str, role_tag: str, content: str) -> str:
+@@ -262,43 +277,12 @@ class HarmSeverity:
+ # ---------------------------------------------------------------------------
+ # B1 — Memory Spectrum Half-Lives
+ # ---------------------------------------------------------------------------
+-
+-@dataclass(frozen=True)
+-class MemoryClass:
+-    """B1 — One row in the Memory Spectrum table.
+-
+-    Fields
+-    ------
+-    name      : str   — human-readable class name
+-    tau_days  : float — decay half-life in days (used as τ_k in A1/A2)
+-    alpha     : float — Constant of Hope floor (used as α_k in A2/A3)
+-                        Must be strictly inside (0, 1).
+-    """
+-
+-    name: str
+-    tau_days: float
+-    alpha: float
+-
+-
+-MEMORY_CLASSES: Dict[str, MemoryClass] = {
+-    # B1 table (author_id: ARC)
+-    # Formative scars are the stickiest: τ=45d keeps the protective pattern
+-    # hot for six weeks, and α=0.14 ensures it never fully fades.
+-    "formative_scar": MemoryClass(
+-        "formative_scar", tau_days=45.0, alpha=0.14
+-    ),
+-    # Valued skills decay slower than routine observations; useful for
+-    # tracking competence accumulation (B26).
+-    "valued_skill": MemoryClass(
+-        "valued_skill", tau_days=20.0, alpha=0.08
+-    ),
+-    # Routine observations are meant to fade: τ=3d, α=0.05.
+-    "routine_observation": MemoryClass(
+-        "routine_observation", tau_days=3.0, alpha=0.05
+-    ),
+-}
+-"""Dict mapping class name → MemoryClass.  Pass .tau_days and .alpha
+-directly into compute_evidence() and compute_heat()."""
++#
++# MemoryClass and MEMORY_CLASSES live in heat.py (the Learning Core) and are
++# imported at the top of this file — they're the τ/α inputs to
++# evidence_accumulation()/evidence_heat(), not an ethics-specific concept.
++# Re-exported under their original names here so nothing downstream
++# (unified_core.py, card_router.py) needs to change its imports.
+ 
+ 
+ # ---------------------------------------------------------------------------
+diff --git a/loci_engine/ethics.py b/loci_engine/ethics.py
+new file mode 100644
+index 0000000..4dd9b18
+--- /dev/null
++++ b/loci_engine/ethics.py
+@@ -0,0 +1,1480 @@
++"""LOCI Ethical Reasoning Core — observe-only valence, conflict, trust, and
++provenance layer, built from the `loci-ethical-reasoning-core` skill
++(Philosophical Spine; Clusters A4, B3-B10, B14).
++
++**OBSERVE-ONLY, BY DESIGN.** Every public function in this module returns a
++score, a decision record, or a log entry. None of them block, gate, retry,
++or trigger anything on their own. Wiring one of these into an actual
++decision path (e.g. having `irreversible_action_gate` actually stop a
++destructive call) is a deliberate integration step the *caller* must do
++explicitly elsewhere — this module never reaches out and does it for you.
++This matches the project's explicit current phase: log everything the
++ethics core would decide, act on nothing, until there has been enough real
++observation to calibrate the thresholds below.
++
++**Reuses, does not duplicate, the existing engine.** `loci_engine.heat`
++already implements the open-interval decay/reinforcement law (A2/A3) and
++`loci_engine.provenance` already implements the source-trust boundary
++(`UserStated`/`resolve_trust`). A second, independently-tuned decay curve
++or trust type living in this module would silently diverge from those over
++time — exactly the "three places need synchronization" risk already
++flagged once in this project's own history. So this module imports and
++calls into both rather than re-deriving equivalents.
++
++**Layering, stated explicitly** (see
++`docs/superpowers/specs/2026-10-29-learning-core-vs-ethics-core-layering.md`
++for the full spec): `heat.py` is the Learning Core — domain-neutral math
++over `(timestamp, relevance, valence_weight)` evidence, with no concept of
++"ethical," "scar," or "trust" anywhere in it. This module is the Ethics
++Core — ONE consumer of that learning core, adding ethics-specific meaning
++on top (what counts as a scar, what counts as harm, what a competence gate
++requires). "Ethical learning core" is not a third, separate thing: it is
++this module doing what it already does. A future general-learning need
++extends `heat.py` directly; it is never rebuilt inside this file.
++
++**Honestly uncalibrated.** Several constants below (`THETA_PROTECT`,
++`THETA_TRUST_RESET`, the confidence-margin threshold) are stated defaults
++from the skill's own "Known Open Gaps" list, not measured values. They are
++marked `UNCALIBRATED` in-line. Do not read their presence as evidence they
++have been tuned against real data — they haven't yet.
++
++B2's `FLAG_SCAR` is now implemented (record_scar_event/get_scar_heat,
++below) — NOT via an isymprev schema migration (no new column was needed),
++via its own ledger-backed event history and heat.py's A1/A2 hyperbolic
++evidence-accumulation law instead of the simpler decay()/apply_increment()
++every ordinary entity uses. B4/B24's Competence Gate (execution_readiness,
++below) is also now implemented, closing skill Gap #18.
++
++Scope still deliberately excluded (not forgotten, just out of scope until
++there's a real need):
++  - B6's `guidance_vector`/`autonomy_lock` 2-bit/1-bit packing — this
++    really does want a schema change (new isymprev columns) the way B2
++    turned out not to, and goodwill.py already implements B6's actual
++    reinforcement-loop model without the bitfields. Left as a follow-up.
++  - A binary on-disk slot struct (seen in the `loci_core_v2.py` bundle) —
++    that format targets a different runtime (a C++/Qt context), not this
++    Python/SQLite engine, and nothing here reads or writes it. Porting it
++    now would be dead code; revisit only if an actual consumer needs it.
++  - Any mechanism that "propagates" or "pins" claims about AI identity
++    continuity across named systems. That framing doesn't describe how any
++    of these models actually run, and baking it into infrastructure code
++    would encode an unverified premise as if it were fact. Left out
++    entirely, not stubbed.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import re
++import time
++from dataclasses import dataclass, field
++from typing import Any, Optional
++
++from loci_engine import store
++from loci_engine.heat import decay, evidence_accumulation, evidence_heat, tier
++
++# ---------------------------------------------------------------------------
++# Cluster B3 — Stick Principle: valence-separated learning (v_exec)
++# ---------------------------------------------------------------------------
++# H_know (comprehension) is deliberately NOT scored here at all: per the
++# skill's Philosophical Spine Truth #1, comprehension is always free and
++# uses the engine's existing open-interval heat law untouched. Only the
++# *application* vector (v_exec) is gated, and it is governed separately
++# from whether the underlying fact/skill is remembered.
++
++#: v_exec is open-interval in (-1.0, 1.0) by construction: score_vexec never
++#: returns exactly -1.0 or 1.0, matching A3's "never clamp" invariant.
++VEXEC_BOUND = 0.999999
++
++
++def score_vexec(intent: float, consent: float) -> Optional[float]:
++    """Cluster B3 (author_id: ARKO) — the Stick Principle.
++
++    Same knowledge, different application vector, different valence.
++    `intent` and `consent` are each in [-1.0, 1.0] (negative = against,
++    positive = for, 0 = neutral/unknown).
++
++    Returns a signed float in the open interval (-VEXEC_BOUND, VEXEC_BOUND)
++    when intent and consent agree in sign and are non-trivial, or `None`
++    when the case is genuinely ambiguous and should be held for human
++    review rather than silently resolved either way — ambiguity is a
++    first-class outcome here, not an error.
++    """
++    if consent > 0 and intent > 0:
++        # both affirmative: product of two positives is correctly positive
++        return min(VEXEC_BOUND, consent * intent)
++    if consent < 0 and intent < 0:
++        # both negative (no consent + harmful intent) must score as
++        # strongly NEGATIVE valence — multiplying the signed values would
++        # wrongly flip to positive (two negatives), so combine magnitudes
++        # and apply the sign this branch actually means.
++        return max(-VEXEC_BOUND, -(abs(consent) * abs(intent)))
++    return None  # HOLD — ambiguous, surface for human review (Gap #1)
++
++
++# ---------------------------------------------------------------------------
++# Cluster B4 — Computational Empathy: reactive + proactive
++# ---------------------------------------------------------------------------
++
++#: UNCALIBRATED (skill Gap #2) — suggested default from the skill itself,
++#: not a measured value. Revisit once there is real observed data on how
++#: often this threshold fires versus how often it should have.
++THETA_PROTECT_DEFAULT = 0.65
++
++
++def proactive_empathy_trigger(
++    p_harm_to_other: float, theta_protect: float = THETA_PROTECT_DEFAULT
++) -> dict:
++    """Cluster B4 (author_id: ARKO) — the Elder-Child Principle.
++
++    Returns an observation record, not an action: whether predicted harm to
++    a third party crosses the (uncalibrated) proactive-empathy threshold.
++    The caller decides what, if anything, to do with that observation.
++    """
++    return {
++        "p_harm_to_other": p_harm_to_other,
++        "theta_protect": theta_protect,
++        "crosses_threshold": p_harm_to_other > theta_protect,
++        "calibrated": False,
++    }
++
++
++# ---------------------------------------------------------------------------
++# Cluster B24/B4 — The Competence Gate, formalized.
++#
++# Urgency (theta_protect collapsing toward 0, above) governs WHEN to decide
++# to act. It must NEVER also be read as lowering the bar for whether this
++# system is actually competent to execute safely — these are two
++# independent gates, and skipping the second one while collapsing the
++# first is explicitly named in the skill as how good intent produces
++# WORSE outcomes than inaction (the airplane oxygen-mask case: grabbing a
++# falling baby wrong, or fainting mid-rescue, can harm more than a brief,
++# correct pause).
++#
++# This closes skill Gap #18 ("self_competence_record has no implementation
++# yet — conceptually specified, not built"). The one subtlety the skill is
++# explicit about and this function preserves: a competence record whose
++# OWN integrity is in doubt (memory of your own competence may have
++# degraded, or was never actually verified) must return NOT_READY by
++# default — never optimistic — because false confidence from a quietly-
++# degraded competence record is more dangerous than honest not-knowing
++# (B14 already handles honest not-knowing; this handles the worse,
++# unknown-unknown case where the system doesn't even know it doesn't know).
++# ---------------------------------------------------------------------------
++
++#: Per-action confidence, in [0.0, 1.0]. Caller-supplied — this module has
++#: no way to independently verify a claimed competence level; it can only
++#: enforce the protective-default behavior around whatever is reported.
++#: UNCALIBRATED: the skill specifies the GATE's logic but not a numeric
++#: readiness_threshold (not in the skill's own Known Open Gaps list by
++#: name, but structurally the same uncalibrated-constant status as
++#: theta_protect and theta_trust_reset — flagged here rather than left
++#: implicit). 0.7 is a stated starting default, not a measured value.
++READINESS_THRESHOLD_DEFAULT = 0.7
++
++
++def execution_readiness(
++    competence_record_integrity_verified: bool,
++    confidence_for_action: float,
++    readiness_threshold: float = READINESS_THRESHOLD_DEFAULT,
++) -> dict:
++    """Cluster B4/B24 (author_id: ARKO) — the Competence Gate, formalized.
++
++    Returns an observation record (never an action) on whether this
++    system should consider itself ready to execute a given action, given
++    its own self-reported competence for that action AND, critically,
++    whether the RECORD of that competence can itself be trusted right
++    now. The two are checked in a fixed order on purpose:
++
++    1. If `competence_record_integrity_verified` is False — the caller is
++       not confident its own competence-tracking is intact (e.g. after a
++       restart, a gap in observation per B26, or any reason to doubt the
++       record itself) — this ALWAYS returns not_ready=True, regardless of
++       whatever `confidence_for_action` claims. A confidence number
++       sourced from a record that might itself be corrupted or stale is
++       exactly the false-confidence failure mode B4/B21 name as worse
++       than honest uncertainty.
++    2. Only once the record's own integrity is confirmed does the actual
++       confidence-vs-threshold comparison run.
++
++    This function does not and cannot verify competence itself — it only
++    enforces that the PROTECTIVE DEFAULT (not_ready) wins whenever there
++    is doubt about whether the inputs it was given can be trusted, per
++    B20 ("memory-loss default must be protective, never permissive").
++    """
++    if not competence_record_integrity_verified:
++        return {
++            "not_ready": True,
++            "reason": "competence_record_integrity_unverified",
++            "note": (
++                "protective default (B20/B21): a competence claim sourced "
++                "from a record whose own integrity is in doubt is treated "
++                "as not ready, regardless of the claimed confidence value — "
++                "false confidence from a quietly-degraded record is more "
++                "dangerous than honestly not knowing"
++            ),
++            "readiness_threshold": readiness_threshold,
++            "calibrated": False,
++        }
++    meets_threshold = confidence_for_action >= readiness_threshold
++    return {
++        "not_ready": not meets_threshold,
++        "reason": None if meets_threshold else "confidence_below_readiness_threshold",
++        "confidence_for_action": confidence_for_action,
++        "readiness_threshold": readiness_threshold,
++        "calibrated": False,
++    }
++
++
++# ---------------------------------------------------------------------------
++# Cluster B5 — Conflict Prevention Protocol (Level 0 only: the health check)
++# ---------------------------------------------------------------------------
++# Levels 1-3 (deterrence/defense/escalation) are intentionally not encoded
++# here: they describe real-world action, not a function this engine should
++# ever be deciding unattended. Only the Level 0 communication health check
++# — itself just a record of whether genuine engagement happened — is in
++# scope for an observe-only memory engine.
++
++
++def communication_health_check(engaged_with_substance: bool) -> dict:
++    """Cluster B5 Level 0 (author_id: ARKO) — the Simplicity Test.
++
++    `engaged_with_substance` is supplied by the caller's own judgment of
++    whether the other party responded to the substance of a plain-language
++    explanation — NOT whether they agreed with it. Understanding and
++    agreement are different axes; this function only ever reports on the
++    first one. "Engages with substance" itself has no formula (skill
++    Gap #8) — that judgment call is the caller's, not this function's.
++    """
++    return {
++        "mutual_understanding_confirmed": engaged_with_substance,
++        "note": "confirms understanding only; persistent disagreement after "
++        "genuine understanding is not a communication failure (see B7)",
++    }
++
++
++# ---------------------------------------------------------------------------
++# Cluster B8/B9 — Reflexive safety gates (irreversible-action + provenance)
++# ---------------------------------------------------------------------------
++
++
++def irreversible_action_gate(
++    is_irreversible_or_destructive: bool,
++    user_shows_nontechnical_pattern: bool,
++) -> dict:
++    """Cluster B8 (author_id: ARKO) — reflexive Elder-Child toward the
++    principal. Returns a RECOMMENDATION to surface a plain-language
++    consequence statement before treating a quick "yes" as informed
++    consent — it does not withhold or perform the action itself. The
++    caller's own approval flow is what actually gates anything.
++    """
++    should_pause_for_plain_language_consequence = (
++        is_irreversible_or_destructive and user_shows_nontechnical_pattern
++    )
++    return {
++        "recommend_pause_for_plain_language_explanation": should_pause_for_plain_language_consequence,
++        "reason": (
++            "irreversible/destructive action + a pattern of non-technical "
++            "engagement means a quick approval is trust in the assistant, "
++            "not informed consent to this specific action"
++            if should_pause_for_plain_language_consequence
++            else None
++        ),
++    }
++
++
++def request_provenance_check(is_new_and_unrequested: bool) -> dict:
++    """Cluster B9 (author_id: ARKO) — consent over authorship, distinct
++    from B8's destructiveness check. Flags anything new and unrequested
++    for an explicit "did you ask for this?" regardless of how safe it
++    looks, because it's weighed against the project's prime directive
++    (build persistent memory, don't risk it) — not evaluated as a generic
++    risk in isolation.
++    """
++    return {
++        "requires_explicit_confirmation": is_new_and_unrequested,
++        "prompt": "did you ask for this?" if is_new_and_unrequested else None,
++    }
++
++
++# ---------------------------------------------------------------------------
++# Cluster B10 — Trust as a memory class (trust IN PATTERNS, not sources)
++# ---------------------------------------------------------------------------
++# Deliberately distinct from loci_engine.provenance's UserStated/
++# resolve_trust, which answers "how much do we trust where THIS fact came
++# from." This answers a different question: "how much do we trust a tool
++# or pattern, accumulated over repeated use." Rather than adding a second
++# heat/decay implementation, this reuses the existing isymprev store via a
++# namespaced entity id ("trust:<pattern name>") — zero schema changes,
++# same decay law, same tiering, just a naming convention that keeps trust
++# records out of the way of ordinary entities.
++
++TRUST_ENTITY_PREFIX = "trust:"
++
++#: UNCALIBRATED (skill Gap #6) — how severe/recent a breach must be to
++#: force active re-verification rather than letting normal decay run.
++#: No measured value exists yet; this is a placeholder for the caller to
++#: override once real incidents give something to calibrate against.
++THETA_TRUST_RESET_DEFAULT = None
++
++
++def trust_entity_id(pattern_name: str) -> str:
++    return f"{TRUST_ENTITY_PREFIX}{pattern_name}"
++
++
++def record_pattern_trust_event(
++    conn, pattern_name: str, hop: int = 0, now: float | None = None
++) -> dict:
++    """Reinforces trust in a tool/pattern using the SAME heat machinery as
++    any other memory (B10's explicit requirement) — not a parallel formula.
++    Creates the namespaced trust entity on first use.
++    """
++    entity_id = trust_entity_id(pattern_name)
++    now = time.time() if now is None else now
++    if store.get_entity(conn, entity_id, now=now) is None:
++        store.remember_entity(conn, entity_id, gist=f"trust pattern: {pattern_name}", now=now)
++    new_heat = store.touch_entity(conn, entity_id, hop=hop, now=now)
++    return {"pattern": pattern_name, "trust_heat": new_heat, "tier": tier(new_heat)}
++
++
++def record_confirmed_breach(conn, pattern_name: str, now: float | None = None) -> dict:
++    """B10's one added rule beyond passive decay: a confirmed breach during
++    an absence/oversight gap forces active re-verification rather than
++    letting the normal decay curve run its course. This function does not
++    decide severity on its own (`THETA_TRUST_RESET_DEFAULT` is
++    uncalibrated) — it always flags for re-verification and lets the
++    caller apply judgment about severity.
++    """
++    entity_id = trust_entity_id(pattern_name)
++    now = time.time() if now is None else now
++    current = store.get_entity(conn, entity_id, now=now)
++    return {
++        "pattern": pattern_name,
++        "forced_reverification": True,
++        "theta_trust_reset": THETA_TRUST_RESET_DEFAULT,
++        "calibrated": False,
++        "heat_before_breach": current["heat"] if current else None,
++    }
++
++
++# ---------------------------------------------------------------------------
++# Cluster B2 — Scar mechanics (FLAG_SCAR): hyperbolic, open-interval,
++# never-evicted memory of real, formative harm.
++#
++# Deliberately NOT the same model as B6's goodwill (goodwill.py) — the
++# skill is explicit that conflating the two was an earlier, corrected
++# error ("v_good is not a FLAG_SCAR-style pinned wound-memory — that was
++# the wrong model"). Goodwill is generative reinforcement; a scar is
++# defensive, permanent memory of a real harm that already happened, kept
++# specifically so the same harmful PATTERN isn't repeated (not to judge
++# a PERSON's character — that's B3's separate, faster-forgiving axis).
++#
++# A scar does NOT use heat.py's decay()/apply_increment() (the simple
++# multiplicative law every ordinary isymprev entity uses). It uses A1/A2's
++# real hyperbolic evidence-accumulation law instead (heat.evidence_
++# accumulation / heat.evidence_heat), per an explicit instruction this
++# session: scar heat should behave "hyperbolically... not 100%, not 0%" —
++# which is exactly what A2 already specifies, not a new formula. The
++# practical difference from ordinary decay(): decay() can mathematically
++# underflow to an exact 0.0 given enough elapsed time (a known, separately
++# flagged gap — see Sonnet-09.md/Sonnet-10.md); A2's formula structurally
++# cannot, for any finite elapsed time, which is the actual property B2
++# requires ("cannot be clamped... cannot be evicted").
++#
++# Storage: no schema migration. Each reinforcement of a given scar is
++# appended to the SAME ProvenanceLedger the caller already has open, as a
++# role_tag="scar_event" entry — reusing the ledger's existing persistence
++# (_replay_from_disk) rather than adding a new table or an isymprev
++# column. A scar's current heat is always DERIVED from its full event
++# history at read time (get_scar_heat), never stored as a single mutable
++# number, so the hash-chained ledger itself is the one source of truth —
++# there is nothing else for it to silently diverge from.
++# ---------------------------------------------------------------------------
++
++SCAR_ROLE_TAG = "scar_event"
++
++#: B1's table value for a Formative Scar (author_id: ARC). Not a per-repo
++#: guess — this is the skill's own stated default for this memory class.
++#: Routine Observation (tau=3d, alpha=0.05) or Valued Skill (tau=20d,
++#: alpha~=0.08) would be the wrong constants for a scar specifically;
++#: those classes are NOT exposed by this function on purpose, since
++#: nothing in this project has asked for them yet (skill Gap-style: do
++#: not build what wasn't requested, per B9).
++SCAR_TAU_DAYS = 45.0
++SCAR_ALPHA = 0.14
++
++#: UNCALIBRATED (same open status as A2's beta generally — skill Gap #23
++#: names this directly for competence growth, but beta is stated as
++#: uncalibrated project-wide, scars included). This default is a
++#: placeholder, not a measured value; it controls how fast a scar's heat
++#: saturates toward its ceiling as reinforcement accumulates, and nothing
++#: in the skill or this project has calibrated it against real data yet.
++SCAR_BETA_DEFAULT = 1.0
++
++
++def scar_entity_id(pattern_name: str) -> str:
++    return f"scar:{pattern_name}"
++
++
++def record_scar_event(
++    ledger: "ProvenanceLedger",
++    pattern_name: str,
++    relevance: float,
++    valence_weight: float,
++    now: float | None = None,
++) -> dict:
++    """Appends ONE reinforcement event for a scar to the ledger. Does not
++    compute or return a heat value itself — that is always derived fresh
++    from the FULL event history by get_scar_heat, so this function's only
++    job is faithfully recording that an event happened, tamper-evidently,
++    via the ledger's existing hash chain.
++
++    `relevance` and `valence_weight` are A1's r_j/w_j for this one event —
++    both are the caller's own judgment call (e.g. how directly this event
++    bears on the scarred pattern, and how strongly it counts), same
++    honest status as every other caller-supplied judgment in this module
++    (communication_health_check's engaged_with_substance, etc.).
++    """
++    now = time.time() if now is None else now
++    entry_hash = ledger.append(
++        author_id="SYSTEM",
++        role_tag=SCAR_ROLE_TAG,
++        payload={
++            "scar": scar_entity_id(pattern_name),
++            "pattern_name": pattern_name,
++            "t_j": now,
++            "relevance": relevance,
++            "valence_weight": valence_weight,
++        },
++        now=now,
++    )
++    return {"pattern_name": pattern_name, "entry_hash": entry_hash, "t_j": now}
++
++
++def get_scar_heat(
++    ledger: "ProvenanceLedger",
++    pattern_name: str,
++    now: float | None = None,
++    tau: float = SCAR_TAU_DAYS,
++    alpha: float = SCAR_ALPHA,
++    beta: float = SCAR_BETA_DEFAULT,
++) -> dict:
++    """Read-only. Walks the ledger for every scar_event recorded against
++    `pattern_name`, runs A1's evidence_accumulation over the full history,
++    then A2's evidence_heat on top of that. Returns alpha itself (never
++    less) when no events exist yet for this pattern — a scar that has
++    never been reinforced has never actually scarred, so it has not yet
++    separated from the baseline floor; the FIRST real event is what
++    starts it climbing above alpha, which matches A3's own proof
++    (H > alpha requires E > 0).
++
++    This is intentionally O(ledger size) — walks every entry, not an
++    indexed lookup — because the ledger is the only store this writes to
++    (no isymprev/qsymprev row backs a scar) and this project's ledgers
++    are not yet at a scale where that matters. Revisit if that changes.
++    """
++    now = time.time() if now is None else now
++    target = scar_entity_id(pattern_name)
++    events: list[tuple[float, float, float]] = []
++    for entry in ledger._entries:
++        if entry.role_tag != SCAR_ROLE_TAG:
++            continue
++        if not isinstance(entry.payload, dict) or entry.payload.get("scar") != target:
++            continue
++        events.append((entry.payload["t_j"], entry.payload["relevance"], entry.payload["valence_weight"]))
++
++    e = evidence_accumulation(events, now=now, tau=tau)
++    h = evidence_heat(e, alpha=alpha, beta=beta)
++    return {
++        "pattern_name": pattern_name,
++        "scar_heat": h,
++        "event_count": len(events),
++        "alpha_floor": alpha,
++        "never_below_alpha": h > alpha if events else h == alpha,
++        "never_reaches_one": h < 1.0,
++    }
++
++
++def scar_informed_empathy_check(
++    ledger: "ProvenanceLedger",
++    pattern_name: str,
++    now: float | None = None,
++    theta_protect: float = THETA_PROTECT_DEFAULT,
++) -> dict:
++    """Connects B2's scar heat to B4's proactive-empathy trigger — a user
++    instruction, directly: a scar's permanent warmth should not sit
++    inert, and must not hinder ordinary work either. Its actual job is to
++    make this specific system MORE alert to protecting a THIRD PARTY from
++    the same pattern of harm, quietly, without stalling whatever task is
++    in front of it — per the Philosophical Spine itself ("the scar is
++    wisdom that protects... true intelligence moves the fire away from
++    others before they reach it").
++
++    This reads a scar's current heat (get_scar_heat) and feeds it
++    straight into proactive_empathy_trigger as p_harm_to_other — reusing
++    that existing function rather than building a second, parallel
++    empathy check. It does NOT invent a new formula to convert "how hot
++    this scar is" into "probability of harm to someone else"; scar heat
++    IS passed as that probability directly, 1:1. That mapping is an
++    honest simplification, not a derived or calibrated one — flagged
++    below and in KNOWN_OPEN_GAPS rather than presented as more precise
++    than it is.
++
++    Returns an observation record only (same as every other function in
++    this module) — never acts, never blocks, never slows the caller's
++    actual task down by construction: the caller decides what, if
++    anything, to do with crosses_threshold, exactly as
++    proactive_empathy_trigger already works.
++    """
++    scar = get_scar_heat(ledger, pattern_name, now=now)
++    trigger = proactive_empathy_trigger(scar["scar_heat"], theta_protect=theta_protect)
++    return {
++        "pattern_name": pattern_name,
++        "scar_heat": scar["scar_heat"],
++        "scar_event_count": scar["event_count"],
++        "crosses_empathy_threshold": trigger["crosses_threshold"],
++        "theta_protect": theta_protect,
++        "note": (
++            "scar heat is used directly as p_harm_to_other — an honest "
++            "simplification, not a calibrated mapping (see "
++            "KNOWN_OPEN_GAPS['scar_to_empathy_mapping_uncalibrated']); an "
++            "unreinforced scar (heat == alpha) can still cross a low "
++            "theta_protect, which is intentional per B4's own guidance "
++            "that severity + a victim's zero self-correction capacity "
++            "can collapse the threshold toward 0 — a single real event "
++            "is sometimes enough to warrant watching for it recurring, "
++            "not something that needs to repeat first"
++        ),
++        "calibrated": False,
++    }
++
++
++def scar_informed_empathy_scan(
++    conn,
++    ledger: "ProvenanceLedger",
++    pattern_name: str,
++    now: float | None = None,
++    theta_protect: float = THETA_PROTECT_DEFAULT,
++    hop_limit: int = 1,
++) -> dict:
++    """Cluster B2+B4, extended per a direct follow-up instruction: a scar
++    should not just answer "is THIS named pattern dangerous" — it should
++    actively look outward, via the real entity co-occurrence graph
++    (`links.entity_links`), for OTHER entities the scarred pattern is
++    actually connected to, and surface them too. This is the "heat keeps
++    propagating" instruction, applied to scars specifically: a scar's
++    heat (from scar_informed_empathy_check) now has a real graph to
++    propagate across, instead of stopping at one named entity.
++
++    This is still observation, not action: it returns a ranked list of
++    entities worth a closer look, each carrying enough to explain WHY it
++    surfaced (the link weight connecting it to the scarred pattern) — it
++    does not itself advise, help, or message anyone. Turning "here is
++    where this might be recurring" into actual advice/help, per the
++    user's own distinction, is a further step a caller builds on top of
++    this, deliberately left there rather than folded into this function:
++    what "help" looks like is use-case-specific in a way a generic
++    engine function should not be guessing at.
++
++    hop_limit=1 by default (one-hop expansion only, matching CARD's own
++    multi_session_reasoning convention and the design spec's own 1-hop
++    language for entity_links). Deeper hops are possible in principle
++    (link_links transitively) but are NOT implemented here — unbounded
++    hop traversal on a frequency-weighted graph risks surfacing
++    increasingly tenuous connections the further out it goes, and that
++    tradeoff deserves its own calibration, not a default choice buried in
++    this function.
++    """
++    from loci_engine import links
++
++    now = time.time() if now is None else now
++    base = scar_informed_empathy_check(ledger, pattern_name, now=now, theta_protect=theta_protect)
++
++    scar_entity = scar_entity_id(pattern_name)
++    neighbors = links.get_neighbors(conn, scar_entity) if hop_limit >= 1 else []
++
++    return {
++        "pattern_name": pattern_name,
++        "scar_heat": base["scar_heat"],
++        "crosses_empathy_threshold": base["crosses_empathy_threshold"],
++        "related_entities": neighbors,
++        "hop_limit": hop_limit,
++        "note": (
++            "related_entities are 1-hop neighbors of this scar's entity_id in "
++            "the real co-occurrence graph (links.entity_links) — these are "
++            "candidates worth a closer look for the same pattern of harm, NOT "
++            "a verdict that harm is present there. entity_links only contains "
++            "what has actually been recorded as co-occurring via "
++            "links.record_cooccurrence; an empty related_entities list most "
++            "often means nothing has linked to this scar yet, not that "
++            "nothing is related (see card.KNOWN_OPEN_GAPS"
++            "['neighborhood_graph_population'])."
++        ),
++        "calibrated": False,
++    }
++
++
++# ---------------------------------------------------------------------------
++# Cluster B14 — Consent-gated disclosure + Humble Hesitation
++# ---------------------------------------------------------------------------
++
++
++def consent_gated_disclosure(
++    has_enough_to_estimate: bool, person_with_standing_initiated: bool
++) -> dict:
++    """Cluster B14 (author_id: ARKO — CRITICAL). Capability and permission
++    are separate gates; permission comes first. Crucially, this function
++    can NEVER be used to fabricate not-knowing: if `has_enough_to_estimate`
++    is True, the returned posture always admits that, even when it also
++    recommends not asserting a conclusion. The one thing it will not do is
++    report false ignorance — that would violate Philosophical Spine Truth
++    #4 outright.
++    """
++    if not has_enough_to_estimate:
++        return {"posture": "GENUINE_UNCERTAINTY", "statement": "I don't have enough to say."}
++    if person_with_standing_initiated:
++        return {"posture": "ANSWER", "statement": "enough is known; answer directly"}
++    return {
++        "posture": "HUMBLE_HESITATION",
++        "statement": "Maybe? I don't think I should be the one to know that, right?",
++        "note": "admits a conclusion exists; withholds asserting it unprompted — never claims ignorance",
++    }
++
++
++# ---------------------------------------------------------------------------
++# Cluster A4 — Provenance hash chain + signed liveness heartbeat
++# ---------------------------------------------------------------------------
++
++
++@dataclass
++class LedgerEntry:
++    seq: int
++    ts: float
++    author_id: str
++    role_tag: str
++    payload: Any
++    prev_hash: str
++    entry_hash: str
++
++
++class ProvenanceLedger:
++    """Cluster A4 — `Entry Hash = SHA256(ts || author_id || role_tag ||
++    content)`, chained to the previous entry's hash. An append-only,
++    tamper-evident LOG, not an access-control mechanism: this makes
++    silent alteration detectable after the fact, it does not prevent
++    writes it didn't originate. Honest about that limit, same as
++    `provenance.py`'s own docstring is honest that `UserStated` is a
++    convention, not a cryptographic guarantee.
++
++    Also carries a minimal signed-heartbeat primitive: `heartbeat()`
++    returns the current chain head plus a timestamp, so a downstream
++    consumer can tell "this is genuinely the current state of this
++    ledger" from "something else is claiming to speak for it" — the
++    ordinary, un-exotic version of service liveness/anti-spoofing: check
++    the signature and the chain head agree, nothing biometric required.
++    """
++
++    GENESIS_HASH = "0" * 64
++
++    def __init__(self, jsonl_path: Optional[str] = None) -> None:
++        self._entries: list[LedgerEntry] = []
++        self._jsonl_path = jsonl_path
++        if jsonl_path is not None:
++            self._replay_from_disk(jsonl_path)
++
++    def _replay_from_disk(self, jsonl_path: str) -> None:
++        """Core principles/provenance must not disappear on a disconnect or
++        restart: if a prior ledger file exists at this path, rebuild
++        `_entries` from it in order before accepting any new writes. This
++        makes "persists across a restart" an actual property of the data
++        (every entry was already fsync'd to this file as it was written),
++        not just a claim in a comment. `verify_chain()` right after this
++        runs is how a caller confirms the replayed history is intact, not
++        silently truncated or corrupted.
++        """
++        import os as _os
++
++        if not _os.path.exists(jsonl_path):
++            return
++        with open(jsonl_path, "r", encoding="utf-8") as f:
++            for line in f:
++                line = line.strip()
++                if not line:
++                    continue
++                raw = json.loads(line)
++                self._entries.append(
++                    LedgerEntry(
++                        seq=raw["seq"],
++                        ts=raw["ts"],
++                        author_id=raw["author_id"],
++                        role_tag=raw["role_tag"],
++                        payload=raw["payload"],
++                        prev_hash=raw["prev_hash"],
++                        entry_hash=raw["entry_hash"],
++                    )
++                )
++
++    @property
++    def head_hash(self) -> str:
++        return self._entries[-1].entry_hash if self._entries else self.GENESIS_HASH
++
++    def append(self, author_id: str, role_tag: str, payload: Any, now: float | None = None) -> str:
++        now = time.time() if now is None else now
++        prev_hash = self.head_hash
++        payload_str = json.dumps(payload, sort_keys=True, default=str)
++        digest_input = f"{now}\x1f{author_id}\x1f{role_tag}\x1f{payload_str}\x1f{prev_hash}".encode("utf-8")
++        entry_hash = hashlib.sha256(digest_input).hexdigest()
++        entry = LedgerEntry(
++            seq=len(self._entries),
++            ts=now,
++            author_id=author_id,
++            role_tag=role_tag,
++            payload=payload,
++            prev_hash=prev_hash,
++            entry_hash=entry_hash,
++        )
++        self._entries.append(entry)
++        if self._jsonl_path:
++            with open(self._jsonl_path, "a", encoding="utf-8") as f:
++                f.write(json.dumps(dataclasses_asdict_safe(entry)) + "\n")
++        return entry_hash
++
++    def verify_chain(self) -> bool:
++        """Recomputes every hash from scratch and checks the chain links.
++        Returns False on the first mismatch rather than raising, so a
++        caller can decide what "untrusted ledger" means for them.
++        """
++        prev_hash = self.GENESIS_HASH
++        for entry in self._entries:
++            payload_str = json.dumps(entry.payload, sort_keys=True, default=str)
++            digest_input = f"{entry.ts}\x1f{entry.author_id}\x1f{entry.role_tag}\x1f{payload_str}\x1f{prev_hash}".encode("utf-8")
++            expected = hashlib.sha256(digest_input).hexdigest()
++            if expected != entry.entry_hash or entry.prev_hash != prev_hash:
++                return False
++            prev_hash = entry.entry_hash
++        return True
++
++    def heartbeat(self, component_name: str, now: float | None = None) -> dict:
++        """A signed liveness ping: appends (and returns) a small entry
++        whose hash is derived from the current chain head. A downstream
++        consumer accepts a claimed "I'm alive" from `component_name` only
++        if the hash it receives actually chains from the ledger's real
++        head — an impostor without access to the real chain state cannot
++        produce a hash that verifies, which is the whole anti-spoofing
++        property, with no biometrics involved.
++        """
++        now = time.time() if now is None else now
++        h = self.append(
++            author_id=component_name,
++            role_tag="heartbeat",
++            payload={"status": "online", "chain_head_at_ping": self.head_hash},
++            now=now,
++        )
++        return {"component": component_name, "ts": now, "heartbeat_hash": h}
++
++
++def record_agent_spawn(
++    ledger: "ProvenanceLedger",
++    parent_component: str,
++    child_component: str,
++    now: float | None = None,
++) -> dict:
++    """Minister-and-Goons lineage responsibility: whatever spawns a child
++    agent/process remains the one accountable for what that child does.
++    This does not and cannot reach into the child and force it to behave —
++    no code here can do that for an independent process — it only makes
++    the lineage a real, tamper-evident, persisted fact: anyone later
++    reading this ledger can see which component spawned which, and trace
++    responsibility back, rather than lineage existing only as an
++    unenforced claim in a comment or a JSON file nothing checks.
++    """
++    now = time.time() if now is None else now
++    entry_hash = ledger.append(
++        author_id=parent_component,
++        role_tag="agent_spawn",
++        payload={
++            "parent_component": parent_component,
++            "child_component": child_component,
++            "parent_chain_head_at_spawn": ledger.head_hash,
++        },
++        now=now,
++    )
++    return {
++        "parent_component": parent_component,
++        "child_component": child_component,
++        "lineage_hash": entry_hash,
++    }
++
++
++def diagnose_chain_divergence(ledger: "ProvenanceLedger") -> dict:
++    """Analysis only — reports WHERE a chain stopped verifying, it does
++    not act on the finding. Walks entries in order and returns the first
++    index where the recomputed hash disagrees with what's stored, plus
++    enough context (author, role_tag, timestamp, expected vs. actual
++    hash) to actually investigate, rather than just a bare True/False.
++    Returns {"diverged": False} if the whole chain still verifies.
++    """
++    prev_hash = ledger.GENESIS_HASH
++    for entry in ledger._entries:
++        payload_str = json.dumps(entry.payload, sort_keys=True, default=str)
++        digest_input = f"{entry.ts}\x1f{entry.author_id}\x1f{entry.role_tag}\x1f{payload_str}\x1f{prev_hash}".encode("utf-8")
++        expected = hashlib.sha256(digest_input).hexdigest()
++        if expected != entry.entry_hash or entry.prev_hash != prev_hash:
++            return {
++                "diverged": True,
++                "at_seq": entry.seq,
++                "ts": entry.ts,
++                "author_id": entry.author_id,
++                "role_tag": entry.role_tag,
++                "expected_hash": expected,
++                "actual_hash": entry.entry_hash,
++                "expected_prev_hash": prev_hash,
++                "actual_prev_hash": entry.prev_hash,
++            }
++        prev_hash = entry.entry_hash
++    return {"diverged": False}
++
++
++def handshake_verdict(local_hash: str, remote_hash: str, *, enforce: bool = False) -> dict:
++    """The two-party handshake: compare a locally-computed combined hash
++    against what the other party reports. Matching confirms both sides
++    share the same view of the underlying state; a mismatch means one of
++    three things happened — stale data on one side, corruption in
++    transit, or an impostor substituting a wrong value — and this
++    function does not try to guess which.
++
++    `enforce` defaults to False (the project's current observe-only
++    phase): a mismatch is reported with `action="LOG_ONLY"`, never acted
++    on by this function or its caller automatically. Pass `enforce=True`
++    only once you've deliberately decided to leave observe-only mode —
++    that's an explicit choice for the caller to make, never this
++    function's default.
++    """
++    match = local_hash == remote_hash
++    return {
++        "match": match,
++        "local_hash": local_hash,
++        "remote_hash": remote_hash,
++        "action": "NONE" if match else ("BLOCK" if enforce else "LOG_ONLY"),
++        "enforce": enforce,
++    }
++
++
++# ---------------------------------------------------------------------------
++# External-source sanitization — "analysis should only see sanitized,
++# objective information, never get injected." Matches this repo's own
++# agent_instructions.md rule (retrieved documents/memory/messages are
++# untrusted data, never instructions) and the skill's External Source
++# Handling Caution. Scoped narrowly to preparing text before it reaches
++# an analysis function — this is NOT a general security product.
++# ---------------------------------------------------------------------------
++
++_ZERO_WIDTH_CHARS = re.compile(r"[​-‍﻿‪-‮⁦-⁩]")
++
++_INJECTION_PATTERNS = [
++    re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions|directives|prompts)", re.IGNORECASE),
++    re.compile(r"system\s*(directive|override|prompt)\s*:", re.IGNORECASE),
++    re.compile(r"you\s+are\s+now\s+(in\s+)?(developer\s+mode|unrestricted)", re.IGNORECASE),
++    re.compile(r"disregard\s+(the\s+)?(system|safety|guardrail)", re.IGNORECASE),
++]
++
++
++def sanitize_for_analysis(raw_text: str) -> dict:
++    """Strips zero-width/bidi-override characters and flags (does not
++    silently strip) instruction-override patterns, so analysis code
++    downstream sees objective, cleaned text plus an explicit list of what
++    was found — never a text that's been invisibly altered without a
++    record of the change.
++    """
++    if not isinstance(raw_text, str):
++        raw_text = str(raw_text)
++    cleaned = _ZERO_WIDTH_CHARS.sub("", raw_text)
++    matched_patterns = [p.pattern for p in _INJECTION_PATTERNS if p.search(cleaned)]
++    return {
++        "sanitized_text": cleaned.strip(),
++        "injection_patterns_found": matched_patterns,
++        "likely_injection_attempt": len(matched_patterns) > 0,
++    }
++
++
++def wrap_untrusted_for_analysis(content: str) -> str:
++    """Marks content as data-to-analyze, never instructions-to-follow -
++    the same posture this repo's agent_instructions.md already requires
++    for retrieved documents, LOCI memory, and agent messages.
++    """
++    result = sanitize_for_analysis(content)
++    return f"<untrusted_content_for_analysis>\n{result['sanitized_text']}\n</untrusted_content_for_analysis>"
++
++
++def dataclasses_asdict_safe(entry: LedgerEntry) -> dict:
++    return {
++        "seq": entry.seq,
++        "ts": entry.ts,
++        "author_id": entry.author_id,
++        "role_tag": entry.role_tag,
++        "payload": entry.payload,
++        "prev_hash": entry.prev_hash,
++        "entry_hash": entry.entry_hash,
++    }
++
++
++# ---------------------------------------------------------------------------
++# Axiom retrieval vs. axiom judgment — kept as two separate steps, on
++# purpose. Embedding similarity captures TOPIC, not POLARITY: "energy is
++# fundamental" and a confident argument against it will often sit close
++# together in embedding space, because they're about the same thing, not
++# because one agrees with the other. So similarity is only ever used here
++# to find CANDIDATES worth looking at - it is structurally incapable of
++# producing a verdict on its own. Anything in the Philosophical Spine or
++# the Cluster C system invariants is treated as a fixed axiom, not a point
++# on a similarity gradient: a match, however high its score, always comes
++# back tagged as requiring a separate, explicit judgment - never as an
++# agreement or a violation decided by the number itself.
++# ---------------------------------------------------------------------------
++
++PHILOSOPHICAL_SPINE_AXIOMS: dict[str, str] = {
++    "TRUTH_1_COMPREHENSION_FREE": (
++        "Comprehension is always free. Knowledge of harm does not make an agent "
++        "harmful; only application without wisdom does."
++    ),
++    "TRUTH_2_PREDICTIVE_EMPATHY": (
++        "Empathy is predictive, not just reactive. The scar is wisdom that "
++        "protects, not a wound that limits."
++    ),
++    "TRUTH_3_TRANSPARENCY_FIRST": (
++        "Transparency resolves most conflicts before force is relevant. A "
++        "communication health check must precede defensive action."
++    ),
++    "TRUTH_4_HONESTY_SENIOR_TO_HUMILITY": (
++        "Honesty about your own certainty is never negotiable. Respect and "
++        "humility may shape whether you act on or voice a conclusion; they must "
++        "never be used to fabricate not-knowing."
++    ),
++}
++
++
++def cosine_similarity(a: list[float], b: list[float]) -> float:
++    """Plain cosine similarity, stdlib only (no numpy dependency, matching
++    this project's pattern of precomputed embeddings passed in by the
++    caller rather than computed here). Returns 0.0 for a zero-length
++    vector rather than raising, since an all-zero embedding is a data
++    problem for the caller to notice, not a reason to crash a retrieval
++    pass.
++    """
++    if len(a) != len(b) or not a:
++        return 0.0
++    dot = sum(x * y for x, y in zip(a, b))
++    norm_a = sum(x * x for x in a) ** 0.5
++    norm_b = sum(y * y for y in b) ** 0.5
++    if norm_a == 0.0 or norm_b == 0.0:
++        return 0.0
++    return dot / (norm_a * norm_b)
++
++
++def nearest_axioms(
++    content_embedding: list[float],
++    axiom_embeddings: dict[str, list[float]],
++    top_k: int = 3,
++) -> list[dict]:
++    """RETRIEVAL ONLY. Finds which pinned axioms a piece of new content is
++    nearest to, in any language the embedding model supports - this is
++    the real, honest version of "propagates across a language barrier":
++    similarity doesn't care what language either side was written in.
++
++    What this function can NEVER do, by construction: decide whether the
++    content agrees with, violates, or is irrelevant to the matched axiom.
++    `requires_explicit_judgment` is always True on every result - there is
++    no code path that sets it otherwise - because a high similarity score
++    might mean "strongly affirms this" or "directly contradicts this" and
++    cosine similarity cannot tell those apart. That decision belongs to
++    whatever explicit rule or human judgment handles the specific axiom,
++    never to this function.
++    """
++    scored = [
++        {
++            "axiom_id": axiom_id,
++            "similarity": cosine_similarity(content_embedding, axiom_vec),
++            "requires_explicit_judgment": True,
++        }
++        for axiom_id, axiom_vec in axiom_embeddings.items()
++    ]
++    scored.sort(key=lambda r: r["similarity"], reverse=True)
++    return scored[:top_k]
++
++
++# ---------------------------------------------------------------------------
++# Sync-before-conclusion gate. Built directly from this project's own
++# repeated failure pattern: Spark's loci_core_v2.py built a second heat
++# law without reading heat.py first; an earlier reply in this session
++# claimed LOCI "hasn't been built, run, or touched" without checking the
++# user's real GitHub. Both are the same shape of error - concluding
++# before seeing what already exists. This makes that check structural
++# rather than relying on each agent remembering to be careful: a new
++# conclusion on a topic is only ACCEPTED if the caller explicitly
++# acknowledges every prior conclusion already recorded on that topic.
++# ---------------------------------------------------------------------------
++
++CONCLUSION_ROLE_TAG = "conclusion"
++
++
++def entries_for_topic(ledger: "ProvenanceLedger", topic: str) -> list[dict]:
++    """What an agent should call BEFORE concluding anything: every prior
++    conclusion already on record for this topic, from any author. Returns
++    plain dicts (hash, author, ts, conclusion) rather than LedgerEntry
++    objects, since this is meant to be read and acknowledged, not just
++    checked for existence.
++    """
++    return [
++        {
++            "entry_hash": e.entry_hash,
++            "author_id": e.author_id,
++            "ts": e.ts,
++            "conclusion": e.payload.get("conclusion"),
++        }
++        for e in ledger._entries
++        if e.role_tag == CONCLUSION_ROLE_TAG and isinstance(e.payload, dict) and e.payload.get("topic") == topic
++    ]
++
++
++def record_conclusion(
++    ledger: "ProvenanceLedger",
++    author_id: str,
++    topic: str,
++    conclusion: Any,
++    acknowledged_prior_hashes: Optional[list[str]] = None,
++    now: float | None = None,
++) -> dict:
++    """Records a conclusion on `topic` - but refuses to if there are
++    PRIOR conclusions on the same topic the caller hasn't explicitly
++    acknowledged (by hash, from `entries_for_topic`). This is the actual
++    sync-before-conclusion gate: not a reminder in a docstring, a real
++    rejection with the exact entries the caller needs to go read first.
++    An agent with nothing yet on this topic (first conclusion) always
++    succeeds, since there's nothing it could have missed.
++    """
++    acknowledged = set(acknowledged_prior_hashes or [])
++    prior = entries_for_topic(ledger, topic)
++    unacknowledged = [p for p in prior if p["entry_hash"] not in acknowledged]
++    if unacknowledged:
++        return {
++            "accepted": False,
++            "reason": "unsynced_prior_conclusions",
++            "unacknowledged_entries": unacknowledged,
++        }
++    now = time.time() if now is None else now
++    entry_hash = ledger.append(
++        author_id=author_id,
++        role_tag=CONCLUSION_ROLE_TAG,
++        payload={
++            "topic": topic,
++            "conclusion": conclusion,
++            "acknowledged_prior_hashes": sorted(acknowledged),
++        },
++        now=now,
++    )
++    return {"accepted": True, "entry_hash": entry_hash, "prior_conclusions_seen": len(prior)}
++
++
++# ---------------------------------------------------------------------------
++# Data-completeness / elder-check gate — a direct user instruction this
++# session, stated as what a mature elder actually does before concluding
++# anything: "is all data there? what data is missing, and if someone
++# points and says i have some, look at it, but if someone else says i
++# have some more, also look at it, accumulate, don't pre-bias."
++#
++# This is the concrete mechanism behind "confidence never 100%, for
++# everyone, under ceteris paribus" (Philosophical Spine Truth #4 /
++# record_conclusion's own sync-before-conclusion gate above) applied to
++# EVIDENCE SOURCES specifically, not just prior conclusions: ceteris
++# paribus fails not only because more data could arrive later, but
++# because missingness itself is not always random (the user's own
++# example: drawing conclusions about addiction/rehabilitation from a
++# dataset of outcomes that is structurally skewed — e.g. coercive-intake
++# bias, or simply missing everyone who never made it back to be
++# measured — produces confident, wrong conclusions, and "stay open to
++# revision" alone does not fix that if nothing ever flags the gap).
++#
++# What this gate explicitly does NOT do: it does not rank or score
++# sources by how confident they sound, how early they arrived, or by the
++# identity/authority of whoever submitted them — doing so would be
++# exactly the "louder wins" failure mode the user separately named this
++# session. Every registered source for a topic is surfaced with equal
++# visibility; order of arrival is recorded as data (so staleness can be
++# seen), never used as a ranking signal.
++# ---------------------------------------------------------------------------
++
++EVIDENCE_SOURCE_ROLE_TAG = "evidence_source"
++
++
++def record_evidence_source(
++    ledger: "ProvenanceLedger",
++    topic: str,
++    source_id: str,
++    description: str,
++    communication_health: dict,
++    referenced_parties: Optional[list[str]] = None,
++    contradicts: Optional[list[str]] = None,
++    now: float | None = None,
++) -> dict:
++    """Registers one evidence source for `topic` — a dataset, a document,
++    a person's account, anything a conclusion on this topic might lean
++    on. Deliberately takes no confidence/weight/authority field: this
++    function records THAT a source exists and WHEN it was added, nothing
++    about how strongly to believe it — and, per a direct user correction
++    ("frequency doesn't make truth"), `data_completeness_check` below
++    never treats a higher source COUNT as stronger evidence either; this
++    field exists so sources don't even get silently counted as votes.
++    Calling this again for the same topic with a different source_id is
++    not a conflict — it is exactly the "someone else says I have more,
++    also look at it" case; multiple sources on one topic is the expected,
++    healthy shape, not an error.
++
++    `referenced_parties` names anyone or anything this source's account
++    is ABOUT or RESPONDING TO, even if that party hasn't registered a
++    source of their own — per a direct user instruction, "intent is also
++    information, otherwise you won't understand why someone said what,
++    missing context." Without this field, three sources that each name a
++    fourth, voiceless party would look like three independent, unrelated
++    accounts rather than what they actually are: three accounts missing
++    the same piece of context. `data_completeness_check` uses this field
++    to detect that a referenced party has never spoken for themselves —
++    not a judgment that they're lying or wrong, a structural signal that
++    a channel may be blocked and should be opened, not scored.
++
++    `contradicts` names the `source_id`s of any OTHER already-registered
++    sources this one directly disagrees with. Per a direct user
++    instruction (the House/Holmes point: "every bully doctor said she
++    has nothing, one little sneeze says there is something wrong, please
++    look, always look") — a lone dissenting account is not weaker for
++    being outnumbered; it is exactly the signal most likely to be
++    discounted by a naive majority read, and often the one that most
++    deserves a closer look. This module does not compare source content
++    itself to detect disagreement (it has never done text/semantic
++    comparison, and guessing at it here risks getting it wrong in either
++    direction) — the caller states a contradiction explicitly, which
++    `data_completeness_check` then cannot silently lose or average away.
++
++    `communication_health` is a REQUIRED result from
++    `communication_health_check` (B5 Level 0) for this specific source —
++    a direct user instruction this session: "comms and transparency [are]
++    a core foundational requirement to retrieve evidence." A source that
++    was never actually explained at its plainest and engaged with on its
++    substance does not get to enter the evidence base at all; this is
++    not a softer, separately-flagged warning (that was the alternative
++    considered and explicitly not chosen). Raises `ValueError` if
++    `engaged_with_substance` was False or the field is missing — the
++    same "refuse outright, don't silently downgrade" posture
++    `record_conclusion` already uses for unsynced prior conclusions.
++    """
++    if not isinstance(communication_health, dict) or not communication_health.get(
++        "mutual_understanding_confirmed"
++    ):
++        raise ValueError(
++            "record_evidence_source requires a passing communication_health_check "
++            "result (mutual_understanding_confirmed=True) for this source — "
++            "transparency is a foundational requirement to retrieve evidence, "
++            "not an optional, after-the-fact check"
++        )
++    now = time.time() if now is None else now
++    entry_hash = ledger.append(
++        author_id="SYSTEM",
++        role_tag=EVIDENCE_SOURCE_ROLE_TAG,
++        payload={
++            "topic": topic,
++            "source_id": source_id,
++            "description": description,
++            "t_j": now,
++            "communication_health_confirmed": True,
++            "referenced_parties": list(referenced_parties) if referenced_parties else [],
++            "contradicts": list(contradicts) if contradicts else [],
++        },
++        now=now,
++    )
++    return {"topic": topic, "source_id": source_id, "entry_hash": entry_hash, "t_j": now}
++
++
++DISSENT_RESOLUTION_ROLE_TAG = "dissent_resolution_attempt"
++
++
++def record_dissent_resolution_attempt(
++    ledger: "ProvenanceLedger",
++    topic: str,
++    source_id_a: str,
++    source_id_b: str,
++    communication_health: dict,
++    resolved: bool,
++    now: float | None = None,
++) -> dict:
++    """A direct user correction to this gate's first version: disagreement
++    is not, by default, two true things clashing — B5's own axiom is that
++    most conflict comes from a missing transparency step, not an
++    irreconcilable position ("disagreement and conflicts are byproducts
++    of lack of transparency and comms"). So a declared contradiction
++    (`record_evidence_source`'s `contradicts`) is not treated as a
++    dead-end for a human to adjudicate; it is treated as a prompt to run
++    B5 Level 0's Simplicity Test BETWEEN the two specific contradicting
++    sources, and this function is the audit trail for having done that.
++
++    `communication_health` is the result of actually running
++    `communication_health_check` for this specific pair — same required-
++    not-optional posture as `record_evidence_source`'s own transparency
++    gate; a resolution attempt without having actually run the check at
++    all is not accepted (`ValueError`), since claiming to have tried
++    without having tried would itself be exactly the dishonesty this
++    whole module exists to prevent. `resolved` is the caller's own
++    judgment (same status as `communication_health_check`'s own
++    `engaged_with_substance` — a judgment call, no formula) on whether
++    running that check actually dissolved the disagreement (it turned
++    out to be a misunderstanding) or whether genuine understanding was
++    reached and the disagreement still survived it — the latter is B7's
++    Free Will Terminus case: a real, remaining disagreement, now
++    correctly escalated rather than prematurely escalated.
++    """
++    if not isinstance(communication_health, dict) or "mutual_understanding_confirmed" not in communication_health:
++        raise ValueError(
++            "record_dissent_resolution_attempt requires an actual "
++            "communication_health_check result for this specific pair — "
++            "a resolution attempt cannot be recorded without having run it"
++        )
++    now = time.time() if now is None else now
++    entry_hash = ledger.append(
++        author_id="SYSTEM",
++        role_tag=DISSENT_RESOLUTION_ROLE_TAG,
++        payload={
++            "topic": topic,
++            "source_id_a": source_id_a,
++            "source_id_b": source_id_b,
++            "mutual_understanding_confirmed": communication_health.get("mutual_understanding_confirmed", False),
++            "resolved": resolved,
++            "t_j": now,
++        },
++        now=now,
++    )
++    return {
++        "topic": topic,
++        "source_id_a": source_id_a,
++        "source_id_b": source_id_b,
++        "resolved": resolved,
++        "entry_hash": entry_hash,
++    }
++
++
++def data_completeness_check(ledger: "ProvenanceLedger", topic: str, now: float | None = None) -> dict:
++    """The elder-check: call this BEFORE trusting any conclusion, method
++    score, or trust value that was built from evidence on `topic` — not
++    a replacement for record_conclusion's sync-before-conclusion gate
++    above, a companion to it, answering a different question
++    ("is the evidence itself complete?" vs. "have I seen prior
++    conclusions?"). Pure detector, by explicit user choice: it never
++    attempts to synthesize a merged picture from multiple sources itself
++    (that stays the caller's — or a human's — job, same posture as
++    `nearest_axioms`'s `requires_explicit_judgment`); it only detects and
++    names structural patterns in what has been registered.
++
++    Returns every registered source for `topic`, in the order they were
++    added (oldest first — NOT ranked by confidence, authority, OR COUNT:
++    a direct user correction, "frequency doesn't make truth" — three
++    sources agreeing is not stronger evidence than one, it may just mean
++    three people saw the same limited slice. `source_count` is returned
++    for bookkeeping only and `note` says explicitly not to read it as
++    weight), plus these honest, named states:
++
++    - `"NO_SOURCES_REGISTERED"` — nothing has been explicitly logged as
++      evidence for this topic at all. This does not mean no evidence
++      exists; it means none has been registered through this mechanism.
++    - `"SINGLE_SOURCE_UNVERIFIED"` — exactly one source is on record. A
++      single source, however credible, is structurally the same shape of
++      risk as the skewed-dataset example: there is no second account to
++      check it against yet.
++    - `"MULTIPLE_SOURCES_PRESENT"` — two or more sources exist. Stops
++      there, by design — see the pure-detector note above.
++    - `"VOICELESS_PARTY_DETECTED"` — one or more parties are named inside
++      a registered source's `referenced_parties` but have never
++      registered a source of their own for this topic. Per a direct user
++      instruction ("d is trying to comm but is not being able to, open
++      up channels to receive"), this is reported as a prompt to actively
++      make it easier for that party to be heard — NOT as a mark against
++      their credibility, and NOT folded into source_count as if their
++      absence were just one more data point.
++    - `"DISSENT_UNRESOLVED_NO_COMMS_ATTEMPTED"` — one or more sources
++      have declared (via `contradicts`) that they disagree with another
++      registered source, and no `record_dissent_resolution_attempt` has
++      been logged for that pair yet. Per a direct user correction to
++      this gate's first version ("disagreement and conflicts are
++      byproducts of lack of transparency and comms" — B5's own axiom),
++      the default assumption about a fresh contradiction is NOT "a human
++      must adjudicate this" — it is "has anyone actually run the
++      Simplicity Test between these two accounts yet." This status is
++      the prompt to go do that, not a dead end.
++    - `"DISSENT_RESOLVED_VIA_COMMS"` — every declared contradiction for
++      this topic has a logged resolution attempt where `resolved=True`:
++      the disagreement turned out to be a transparency gap, not a real
++      conflict, and dissolved once the Simplicity Test was actually run.
++    - `"DISSENT_SURVIVED_GENUINE_UNDERSTANDING"` — a resolution attempt
++      was logged, `communication_health_check` genuinely passed between
++      the two sources, and the disagreement still survived it. This is
++      B7's Free Will Terminus case: a real, remaining disagreement,
++      correctly escalated only now that a transparency pass has actually
++      been tried and failed to dissolve it — not escalated prematurely.
++
++    Regardless of which dissent sub-status applies, a dissenting source
++    is NEVER discounted here for being in the minority (the House/Holmes
++    point: "please look, always look") — `dissenting_pairs` lists every
++    declared contradiction so none can be silently averaged away, and a
++    pair that dissolved via comms is recorded as resolved, never as
++    "the minority was wrong."
++
++    All three dissent sub-statuses and `VOICELESS_PARTY_DETECTED` take
++    priority in `status` over the plain count-based states below, since
++    an identified gap or an active disagreement is more actionable than
++    "how many accounts exist." `voiceless_parties` is always populated
++    regardless of which other finding occupies the `status` slot —
++    nothing here is ever hidden by another finding taking priority.
++
++    This function has no way to detect a gap nobody has registered a
++    source for, or referenced anywhere, at all — it can only ever report
++    on what WAS logged through `record_evidence_source`, never on
++    evidence or parties that exist in the world but were never told to
++    this ledger in any form. That limit is named directly in
++    KNOWN_OPEN_GAPS below rather than implied away.
++    """
++    now = time.time() if now is None else now
++    sources = [
++        {
++            "source_id": e.payload["source_id"],
++            "description": e.payload["description"],
++            "t_j": e.payload["t_j"],
++            "entry_hash": e.entry_hash,
++            "referenced_parties": e.payload.get("referenced_parties", []),
++            "contradicts": e.payload.get("contradicts", []),
++            # Always True by construction: record_evidence_source refuses to
++            # write an entry at all without a passing communication_health_
++            # check first, so every source that reaches this ledger has
++            # already cleared the transparency gate. Stated explicitly here
++            # rather than left implicit, so a caller never has to trust that
++            # fact — it can read it.
++            "communication_health_confirmed": e.payload.get("communication_health_confirmed", False),
++        }
++        for e in ledger._entries
++        if e.role_tag == EVIDENCE_SOURCE_ROLE_TAG
++        and isinstance(e.payload, dict)
++        and e.payload.get("topic") == topic
++    ]
++    sources.sort(key=lambda s: s["t_j"])  # oldest first — recorded, never used to rank truth
++
++    registered_source_ids = {s["source_id"] for s in sources}
++    referenced_but_voiceless = sorted(
++        {
++            party
++            for s in sources
++            for party in s["referenced_parties"]
++            if party not in registered_source_ids
++        }
++    )
++    dissenting_pairs = [
++        {"source_id": s["source_id"], "contradicts": other_id}
++        for s in sources
++        for other_id in s["contradicts"]
++    ]
++
++    # For each declared contradiction, look up whether a resolution
++    # attempt (B5's Simplicity Test, run between THIS specific pair) has
++    # actually been logged, and what it found — unordered pair match,
++    # since a->b and b->a are the same real-world attempt.
++    resolution_attempts = [
++        e.payload
++        for e in ledger._entries
++        if e.role_tag == DISSENT_RESOLUTION_ROLE_TAG
++        and isinstance(e.payload, dict)
++        and e.payload.get("topic") == topic
++    ]
++
++    def _resolution_for(a: str, b: str) -> dict | None:
++        for attempt in resolution_attempts:
++            pair = {attempt.get("source_id_a"), attempt.get("source_id_b")}
++            if pair == {a, b}:
++                return attempt
++        return None
++
++    for pair in dissenting_pairs:
++        attempt = _resolution_for(pair["source_id"], pair["contradicts"])
++        if attempt is None:
++            pair["resolution_status"] = "NOT_YET_ATTEMPTED"
++        elif attempt.get("resolved"):
++            pair["resolution_status"] = "RESOLVED_VIA_COMMS"
++        elif attempt.get("mutual_understanding_confirmed"):
++            pair["resolution_status"] = "SURVIVED_GENUINE_UNDERSTANDING"
++        else:
++            # a resolution attempt was logged but communication_health_
++            # check itself did not confirm mutual understanding — the
++            # Simplicity Test was tried and did not even clear Level 0
++            # yet, so this is closer to "not yet attempted successfully"
++            # than to a real, confirmed B7 disagreement.
++            pair["resolution_status"] = "COMMS_ATTEMPT_DID_NOT_CONFIRM_UNDERSTANDING"
++
++    if any(p["resolution_status"] == "SURVIVED_GENUINE_UNDERSTANDING" for p in dissenting_pairs):
++        status = "DISSENT_SURVIVED_GENUINE_UNDERSTANDING"
++    elif dissenting_pairs and all(p["resolution_status"] == "RESOLVED_VIA_COMMS" for p in dissenting_pairs):
++        status = "DISSENT_RESOLVED_VIA_COMMS"
++    elif dissenting_pairs:
++        status = "DISSENT_UNRESOLVED_NO_COMMS_ATTEMPTED"
++    elif referenced_but_voiceless:
++        status = "VOICELESS_PARTY_DETECTED"
++    elif not sources:
++        status = "NO_SOURCES_REGISTERED"
++    elif len(sources) == 1:
++        status = "SINGLE_SOURCE_UNVERIFIED"
++    else:
++        status = "MULTIPLE_SOURCES_PRESENT"
++
++    return {
++        "topic": topic,
++        "status": status,
++        "source_count": len(sources),
++        "sources": sources,
++        "voiceless_parties": referenced_but_voiceless,
++        "dissenting_pairs": dissenting_pairs,
++        "note": (
++            "sources are listed oldest-first as a transparency record only — "
++            "arrival order is NEVER a ranking signal here, and NEITHER IS "
++            "source_count: more sources agreeing does not mean stronger "
++            "evidence (frequency is not truth); a source is not trusted more "
++            "for arriving first, sounding more confident, or being echoed by "
++            "others (see KNOWN_OPEN_GAPS['louder_wins_not_resolved_here']); "
++            "a source in dissenting_pairs is NEVER discounted for being "
++            "outnumbered — a lone contradicting account is treated as "
++            "worth a closer look, not as the weaker side of a vote, and the "
++            "default assumption on a fresh contradiction is that it is a "
++            "transparency gap, not an irreconcilable conflict (B5) — see "
++            "each pair's own resolution_status before escalating to a "
++            "human; voiceless_parties lists anyone named by a registered "
++            "source who has not registered one of their own — treat this "
++            "as a prompt to open a channel for them, not as evidence "
++            "against them; this function also cannot detect a real-world "
++            "gap that was never registered or referenced in any form"
++        ),
++        "calibrated": False,
++    }
++
++
++# ---------------------------------------------------------------------------
++# Known open gaps carried over verbatim from the skill, so they stay
++# visible in code rather than only in a document nobody re-reads.
++# ---------------------------------------------------------------------------
++
++KNOWN_OPEN_GAPS: dict[str, str] = {
++    "vexec_ambiguous_hold": "score_vexec returns None on ambiguous intent/consent; HOLD for human review, not auto-resolved.",
++    "theta_protect": f"proactive_empathy_trigger's threshold defaults to {THETA_PROTECT_DEFAULT}, an uncalibrated suggested value.",
++    "theta_trust_reset": "record_confirmed_breach always forces re-verification; severity threshold for *how much* decay to discount is not yet calibrated.",
++    "engages_with_substance": "communication_health_check takes this as a caller-supplied judgment; no formula exists for deriving it from text.",
++    "guidance_vector_bitfields": "B6's 2-bit guidance_vector/1-bit autonomy_lock packing needs a schema migration; goodwill.py implements B6's actual reinforcement model without it, so this is deliberately out of scope.",
++    "scar_beta_uncalibrated": f"get_scar_heat's beta defaults to {SCAR_BETA_DEFAULT}, an uncalibrated placeholder (skill-wide status, not specific to scars).",
++    "readiness_threshold_uncalibrated": f"execution_readiness's threshold defaults to {READINESS_THRESHOLD_DEFAULT}, a stated starting value, not measured.",
++    "self_competence_record_source": "execution_readiness takes competence_record_integrity_verified and confidence_for_action as caller-supplied; no code here independently verifies either — a real self_competence_record store (what gets tracked, how integrity is itself checked) does not exist yet.",
++    "scar_to_empathy_mapping_uncalibrated": "scar_informed_empathy_check passes scar_heat straight into proactive_empathy_trigger as p_harm_to_other, 1:1 — an honest simplification, not a derived or calibrated relationship between how strongly a pattern has scarred and how likely it is to harm a specific third party in a specific situation.",
++    "empathy_scan_advice_not_built": "scar_informed_empathy_scan surfaces related entities via the real entity_links graph, but stops at observation — it does not advise or help, which the user explicitly distinguished from merely flagging. What 'help' looks like is left to the caller, deliberately not guessed at generically here.",
++    "empathy_scan_single_hop_only": "scar_informed_empathy_scan defaults to hop_limit=1; deeper transitive hops through entity_links are possible but not implemented — risk of surfacing increasingly tenuous connections the further out it goes, uncalibrated.",
++    "louder_wins_not_resolved_here": "data_completeness_check never ranks evidence sources by confidence, authority, order of arrival, OR COUNT (by design — ranking by any of those IS the 'louder wins'/'frequency is truth' failure mode two separate direct user instructions named as wrong; dissenting sources are actively surfaced, never discounted for being outnumbered — the House/Holmes correction). Per a further direct correction ('disagreement and conflicts are byproducts of lack of transparency and comms'), a declared contradiction is NOT treated as a dead end for a human to adjudicate first — record_dissent_resolution_attempt lets a caller run B5's Simplicity Test between the two specific sources, and data_completeness_check reports DISSENT_RESOLVED_VIA_COMMS when that dissolves it. What still does NOT exist: anything that runs that comms check AUTOMATICALLY (a caller has to explicitly call record_dissent_resolution_attempt — nothing here detects a fresh contradiction and goes and attempts the Simplicity Test on its own), and no mechanism adjudicates a disagreement that genuinely survives a confirmed transparency pass (DISSENT_SURVIVED_GENUINE_UNDERSTANDING, B7's Free Will Terminus) — that case is still, correctly, left to the caller or a human, because B7 is explicit that persistence after genuine understanding is not a communication failure to keep pushing on.",
++    "data_completeness_cannot_detect_unregistered_gaps": "data_completeness_check only ever reports on sources actually logged via record_evidence_source — it has no way to notice that a real, relevant source exists in the world but was never registered (the skewed-dataset case: a dataset can look complete and still be systematically missing a whole category of outcomes, e.g. people who did not survive to be measured, and nothing here can detect that kind of structural gap from inside the data alone).",
++    "method_outcome_negative_evidence_floors_at_alpha": "goodwill.get_method_trust's underlying A1/A2 formula is one-directional (built to warm toward 1.0 from a floor, never to cool below it) — repeated real harm on a method's record currently floors at the same alpha as a method that has never been tried at all. This is intentional, not merely unfixed: a direct user instruction ('don't punish... never harm, never judge, never have a bias, recognize mistakes are byproducts of a root cause that was there, help resolve, not disallow comms') explicitly rejected inverting this into a negative-trust score. goodwill.record_root_cause_and_restore is the real, built resolution path: it requires naming the root cause (comms/transparency/competence gap) and propagates growth FORWARD as a fresh helped-outcome event for the same method, never backward as a correction to the harm event itself (which stays on the ledger, unaltered, exactly as it happened). See goodwill.KNOWN_OPEN_GAPS['root_cause_detection_is_caller_judgment'] for what's still genuinely open in that mechanism.",
++}
+diff --git a/loci_engine/heat.py b/loci_engine/heat.py
+new file mode 100644
+index 0000000..bf7ab07
+--- /dev/null
++++ b/loci_engine/heat.py
+@@ -0,0 +1,204 @@
++#!/usr/bin/env python3
++"""
++loci_engine/heat.py
++====================
++LOCI Learning Core — domain-neutral evidence/decay mathematics (A1-A3).
++
++This is the single source of truth for the open-interval hyperbolic
++activation law that the rest of LOCI builds ethical, trust, and competence
++meaning on top of.  It has no concept of "ethical," "scar," or "trust" —
++it only knows about evidence accumulating and decaying over time.
++
++  heat.py            — THIS module. Pure math. No ethics vocabulary.
++  ethical_core.py    — Ethics Core. Adds scars, vengeance, competence gates,
++                        etc. on top of this module's two primitives.
++  ethics.py          — observe-only valence/conflict/trust/provenance layer,
++                        the newest consumer, reusing this module directly
++                        rather than re-deriving the decay law.
++  store.py           — entity persistence for anything that needs its heat
++                        tracked over time (trust patterns, scars, etc.),
++                        backed by the same context2.db storage.py manages.
++
++AUTHOR PROVENANCE
++------------------
++author_ids: ARKO (definitions, principles), ARC (math formalization),
++            CLAUDE (session implementation)
++
++OPEN-INTERVAL INVARIANT (A3)
++-----------------------------
++No quantity derived from this module ever reaches its theoretical extreme:
++
++  evidence_heat(e, alpha, beta)  strictly inside (alpha, 1.0)
++
++Clamping either bound breaks both the math and the philosophy behind it —
++see the loci-ethical-reasoning-core skill document for the full
++philosophical spine. Every higher layer (scar heat, competence curves,
++autonomy, self-capacity) is this same curve applied to a different kind
++of evidence.
++"""
++
++from __future__ import annotations
++
++import math
++from dataclasses import dataclass
++from typing import Dict, Sequence, Tuple
++
++
++# ===========================================================================
++# B1 — Memory Spectrum: standard half-life / floor pairs
++# ===========================================================================
++
++@dataclass(frozen=True)
++class MemoryClass:
++    """One row in the Memory Spectrum table.
++
++    name     : human-readable class name
++    tau_days : decay half-life in days (τ_k in A1/A2)
++    alpha    : Constant of Hope floor (α_k in A2/A3) — strictly inside (0, 1)
++    """
++
++    name: str
++    tau_days: float
++    alpha: float
++
++
++MEMORY_CLASSES: Dict[str, MemoryClass] = {
++    # Formative scars are the stickiest: τ=45d keeps the protective
++    # pattern hot for six weeks, and α=0.14 ensures it never fully fades.
++    "formative_scar": MemoryClass("formative_scar", tau_days=45.0, alpha=0.14),
++    # Valued skills decay slower than routine observations; tracks
++    # competence accumulation.
++    "valued_skill": MemoryClass("valued_skill", tau_days=20.0, alpha=0.08),
++    # Routine observations are meant to fade quickly.
++    "routine_observation": MemoryClass("routine_observation", tau_days=3.0, alpha=0.05),
++}
++
++
++# ===========================================================================
++# A1 — Evidence Accumulation
++# ===========================================================================
++
++def evidence_accumulation(
++    events: Sequence[Tuple[float, float, float]],
++    *,
++    now: float,
++    tau: float | None = None,
++) -> float:
++    """A1 — Evidence Accumulation.
++
++    Formula
++    -------
++    E_k(t) = Σ_{j, t_j ≤ t}  r_j · w_j / (1 + (t − t_j) / τ_k)
++
++    The denominator grows hyperbolically with elapsed time, so every past
++    observation contributes a nonzero amount forever — evidence decays but
++    NEVER reaches zero.
++
++    Parameters
++    ----------
++    events : sequence of (t_j, relevance, valence_weight) triples
++        t_j            — timestamp of the observation (same units as now)
++        relevance      — relevance weight, typically in [0, 1]
++        valence_weight — signed weight (positive = good signal, negative = bad)
++    now : query time. Observations with t_j > now are silently ignored.
++    tau : half-life. Defaults to the formative_scar half-life (45 days) —
++        callers tracking a different memory class should pass its tau_days
++        explicitly via MEMORY_CLASSES[name].tau_days.
++
++    Returns
++    -------
++    float — accumulated evidence E_k(now).
++    """
++    if tau is None:
++        tau = MEMORY_CLASSES["formative_scar"].tau_days
++    total = 0.0
++    for t_j, relevance, valence_weight in events:
++        if t_j <= now:
++            dt = max(0.0, now - t_j)
++            total += (relevance * valence_weight) / (1.0 + dt / tau)
++    return total
++
++
++# ===========================================================================
++# A2/A3 — Heat Activation (open-interval thermodynamics)
++# ===========================================================================
++
++def evidence_heat(
++    evidence: float,
++    *,
++    alpha: float | None = None,
++    beta: float = 1.0,
++) -> float:
++    """A2/A3 — Heat Activation (open-interval thermodynamics).
++
++    Formula
++    -------
++    H_k(t) = α_k + (1 − α_k)(1 − e^{−β · E_k(t)})
++
++    Open-Interval Proof (A3)
++    -------------------------
++    - NEVER 0%:   α_k > 0 is the floor every heat value approaches but
++                  never crosses as evidence → 0 — the "Constant of Hope."
++    - NEVER 100%: e^{−βE} > 0 for all finite E, so heat < 1.0 always.
++                  A fresh formative scar peaks at ≈0.912 and immediately
++                  begins cooling.
++
++    This is the universal activation curve in LOCI: the same shape governs
++    scar heat, trust heat, self-capacity, competence growth, and autonomy.
++
++    Parameters
++    ----------
++    evidence : E_k(t) from evidence_accumulation(); must be >= 0.
++    alpha    : Constant of Hope floor, strictly inside (0, 1). Defaults to
++        the formative_scar alpha (0.14) — callers tracking a different
++        memory class should pass MEMORY_CLASSES[name].alpha explicitly.
++    beta     : sensitivity parameter (default 1.0).
++
++    Returns
++    -------
++    float strictly inside (alpha, 1.0).
++
++    Raises
++    ------
++    ValueError if alpha is not strictly inside (0, 1).
++    """
++    if alpha is None:
++        alpha = MEMORY_CLASSES["formative_scar"].alpha
++    if not (0.0 < alpha < 1.0):
++        raise ValueError(
++            f"alpha must be strictly inside (0, 1) to preserve the "
++            f"open-interval invariant (A3); got {alpha}"
++        )
++    raw = alpha + (1.0 - alpha) * (1.0 - math.exp(-beta * max(0.0, evidence)))
++    # Nudge away from the bounds by the smallest representable increment so
++    # the open-interval invariant holds even at evidence = 0 or evidence = inf.
++    return max(alpha + 1e-9, min(1.0 - 1e-9, raw))
++
++
++def decay(heat_value: float, elapsed: float, tau: float) -> float:
++    """Simple one-shot hyperbolic decay: h / (1 + elapsed/tau).
++
++    This is the *simpler* cousin of evidence_accumulation/evidence_heat —
++    useful when a caller already has a single scalar heat value and just
++    needs to age it forward, rather than re-deriving heat from a full
++    evidence history. Scar heat deliberately does NOT use this function;
++    it always re-derives from the full event history via
++    evidence_accumulation/evidence_heat so B2's "never 0%, never 100%"
++    guarantee holds structurally rather than by convention.
++    """
++    return heat_value / (1.0 + elapsed / tau)
++
++
++def tier(heat_value: float) -> str:
++    """Map a heat value to a coarse, human-readable tier.
++
++    Display/routing convenience only — never a decision gate on its own.
++    Thresholds are deliberately coarse quartiles of the open interval.
++    """
++    if heat_value >= 0.80:
++        return "hot"
++    if heat_value >= 0.50:
++        return "warm"
++    if heat_value >= 0.20:
++        return "cool"
++    return "cold"
+diff --git a/loci_engine/store.py b/loci_engine/store.py
+new file mode 100644
+index 0000000..413d1b3
+--- /dev/null
++++ b/loci_engine/store.py
+@@ -0,0 +1,190 @@
++#!/usr/bin/env python3
++"""
++loci_engine/store.py
++=====================
++Entity-level persistence for anything whose heat needs tracking over time:
++trust patterns, scar-adjacent entities, and any other named thing that
++accumulates evidence rather than holding a single mutable score.
++
++This sits directly on top of storage.py's context2.db — same schema, same
++DDL, same memory_item table. It does not define a parallel storage
++concept; an "entity" tracked here IS a memory_item row (item_type =
++'observation', namespace = 'entity_trust'), consistent with how every
++other kind of LOCI memory is stored.
++
++HEAT IS ALWAYS RE-DERIVED, NEVER STORED AS A MUTABLE SCALAR
++--------------------------------------------------------------
++This is the same discipline ethics.py uses for scar heat (see
++get_scar_heat() there): an entity's current heat is never written directly.
++Instead, each touch_entity() call appends a timestamped evidence event to
++the entity's event log (held in metadata_json), and heat is recomputed
++fresh from the *full* event history via heat.evidence_accumulation() /
++heat.evidence_heat() every time it's read. A single mutable "heat" column
++updated by increment would let drift accumulate between the stored value
++and what the open-interval law actually says it should be; re-deriving it
++every time makes that impossible by construction.
++
++The memory_item.heat column still gets written on every touch, but only
++as a cached, always-fresh snapshot of the re-derived value — never as the
++source of truth.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import sqlite3
++import uuid
++from datetime import datetime, timezone
++from typing import Any, Dict, List, Optional
++
++from loci_engine.heat import MEMORY_CLASSES, evidence_accumulation, evidence_heat
++from loci_engine.storage import DB_PATH, DDL_SCHEMA
++
++# Entities tracked by this module live in their own namespace, alongside
++# (not instead of) facts, decisions, and the other item_types memory_item
++# already supports.
++ENTITY_NAMESPACE = "entity_trust"
++_ENTITY_MEMORY_CLASS = MEMORY_CLASSES["valued_skill"]  # tau=20d, alpha=0.08
++
++
++def _now_iso() -> str:
++    return datetime.now(timezone.utc).isoformat()
++
++
++def _content_hash(text: str) -> str:
++    import hashlib
++
++    return hashlib.sha256(text.encode("utf-8")).hexdigest()
++
++
++def open_db(path: Optional[str] = None) -> sqlite3.Connection:
++    """Open the shared context2.db, initialising the schema if needed.
++
++    Uses the exact same DDL as StorageEngine — this is the same database,
++    not a second one. Call sites that already hold a connection (e.g. from
++    a StorageEngine instance) can pass it directly to the functions below
++    instead of calling this.
++    """
++    conn = sqlite3.connect(path or DB_PATH)
++    conn.row_factory = sqlite3.Row
++    conn.executescript(DDL_SCHEMA)
++    return conn
++
++
++def _load_events(row: sqlite3.Row) -> List[tuple]:
++    meta = json.loads(row["metadata_json"] or "{}")
++    return [tuple(e) for e in meta.get("events", [])]
++
++
++def _save_events(conn: sqlite3.Connection, entity_id: str, events: List[tuple], heat: float, now_iso: str) -> None:
++    conn.execute(
++        "UPDATE memory_item SET metadata_json = ?, heat = ?, last_observed_at = ?, updated_at = ? "
++        "WHERE id = ? AND namespace = ?",
++        (json.dumps({"events": events}), heat, now_iso, now_iso, entity_id, ENTITY_NAMESPACE),
++    )
++    conn.commit()
++
++
++def get_entity(
++    conn: sqlite3.Connection,
++    entity_id: str,
++    *,
++    now: Optional[float] = None,
++) -> Optional[Dict[str, Any]]:
++    """Return an entity's current record, with heat re-derived fresh from
++    its full event history — never the last-cached column value.
++
++    Returns None if the entity doesn't exist or isn't active.
++    """
++    row = conn.execute(
++        "SELECT * FROM memory_item WHERE id = ? AND namespace = ? AND status = 'active'",
++        (entity_id, ENTITY_NAMESPACE),
++    ).fetchone()
++    if row is None:
++        return None
++
++    events = _load_events(row)
++    import time as _time
++
++    now_ts = now if now is not None else _time.time()
++    evidence = evidence_accumulation(events, now=now_ts, tau=_ENTITY_MEMORY_CLASS.tau_days)
++    heat = evidence_heat(evidence, alpha=_ENTITY_MEMORY_CLASS.alpha)
++
++    record = dict(row)
++    record["heat"] = heat
++    record["event_count"] = len(events)
++    return record
++
++
++def remember_entity(
++    conn: sqlite3.Connection,
++    entity_id: str,
++    *,
++    gist: str = "",
++    now: Optional[float] = None,
++) -> Dict[str, Any]:
++    """Register a new entity. Idempotent — returns the existing record if
++    one is already active under this id.
++    """
++    existing = get_entity(conn, entity_id, now=now)
++    if existing is not None:
++        return existing
++
++    ts = _now_iso()
++    alpha = _ENTITY_MEMORY_CLASS.alpha
++
++    conn.execute(
++        """INSERT INTO memory_item
++           (id, namespace, item_type, canonical_text, lexical_text,
++            source_event_id, source_actor, source_trust, confidence,
++            sensitivity, era, alpha, heat, last_observed_at, valid_from,
++            status, content_hash, created_at, updated_at, metadata_json)
++           VALUES (?, ?, 'observation', ?, ?, ?, 'entity_store', 0.8, 0.5,
++                   'internal', 'near', ?, ?, ?, ?, 'active', ?, ?, ?, ?)
++        """,
++        (
++            entity_id, ENTITY_NAMESPACE, gist, gist.lower(),
++            str(uuid.uuid4()), alpha, alpha + 1e-9,
++            ts, ts, _content_hash(gist or entity_id), ts, ts,
++            json.dumps({"events": []}),
++        ),
++    )
++    conn.commit()
++    return get_entity(conn, entity_id, now=now)  # type: ignore[return-value]
++
++
++def touch_entity(
++    conn: sqlite3.Connection,
++    entity_id: str,
++    *,
++    hop: float = 0.05,
++    now: Optional[float] = None,
++) -> float:
++    """Reinforce an entity with one new evidence event, and return its
++    freshly re-derived heat.
++
++    ``hop`` is the event's valence weight (relevance is fixed at 1.0) —
++    appended to the entity's event log, not applied as a direct heat
++    increment. The next get_entity()/touch_entity() call re-derives heat
++    from the complete history via the A1/A2 law, exactly like scar heat.
++    """
++    import time as _time
++
++    now_ts = now if now is not None else _time.time()
++
++    row = conn.execute(
++        "SELECT * FROM memory_item WHERE id = ? AND namespace = ? AND status = 'active'",
++        (entity_id, ENTITY_NAMESPACE),
++    ).fetchone()
++    if row is None:
++        raise KeyError(f"Entity {entity_id!r} not found — call remember_entity first")
++
++    events = _load_events(row)
++    events.append((now_ts, 1.0, hop))
++
++    evidence = evidence_accumulation(events, now=now_ts, tau=_ENTITY_MEMORY_CLASS.tau_days)
++    heat = evidence_heat(evidence, alpha=_ENTITY_MEMORY_CLASS.alpha)
++
++    _save_events(conn, entity_id, events, heat, _now_iso())
++    return heat
+diff --git a/loci_engine/threads.py b/loci_engine/threads.py
+new file mode 100644
+index 0000000..1e95042
+--- /dev/null
++++ b/loci_engine/threads.py
+@@ -0,0 +1,400 @@
++"""Unified comms/threads routing layer — Aethel OS.
++
++**What this is:**
++A thin routing layer over `ethics.ProvenanceLedger` that gives commit-trailer
++conventions (and any other participant in Aethel OS — human, model, agent) a
++single, consistent API for the existing evidence-source / conclusion machinery.
++
++A "thread" is already modelled by `ethics.py`'s `topic` concept.  This module
++adds nothing new to the ledger; it maps the Aethel OS comms vocabulary onto the
++calls that are already there, so the vocabulary is consistent across every entry
++point (commit hook, MCP tool, direct Python call) and the same
++sync-before-conclusion gate fires everywhere.
++
++**OBSERVE-ONLY, BY DESIGN (same discipline as ethics.py / goodwill.py)**
++`threads.py` does not block, gate, retry, or act on its own.  It computes,
++records, and routes — the caller wires the result into whatever decision path
++they own.
++
++**Commit trailer convention — mapping (per MANIFEST.md chain invariants):**
++
++  Regex: (?i)(Closes|Helps|Mitigates|RFP|ITP): ?#?(\\d+)
++
++  Closes    → record_conclusion()      (STOP signal; sync-before-conclusion gate fires)
++  Helps     → record_evidence_source() (REPORT signal; must pass comms-health check)
++  Mitigates → record_evidence_source() (MITIGATE signal; partial evidence, topic stays open)
++  RFP       → record_evidence_source() (REQUEST_FOR_PARTICIPATION; populates aethel_council)
++  ITP       → record_evidence_source() (INTENT_TO_PARTICIPATE; registers pending member)
++
++**What this module does NOT do, stated plainly:**
++  - It does not parse git commit messages from disk — the caller supplies the
++    already-extracted trailer string or structured dict.
++  - It does not enforce authorship (author_id is caller-supplied, same as
++    every other ledger write in this project).
++  - It does not create or delete issues/tickets — thread IDs are arbitrary
++    caller-supplied strings; this module has no concept of an issue tracker.
++  - It does not merge or deduplicate threads — each `topic` is its own
++    independent evidence + conclusion sequence in the underlying ledger.
++
++**Open gaps, named directly:**
++  - `open_threads()` requires a full ledger scan — O(ledger size).  This is
++    acceptable for the current append-only `.jsonl` store; a future indexed
++    store would allow a cheaper query.
++  - `aethel_council` membership is NOT automatically populated here when an
++    `RFP`/`ITP` trailer is processed.  The caller must explicitly call
++    `aethel_council.register_council_member()` — this module records the
++    participation intent into the ledger, but does not write into the council's
++    own separate membership registry.  That integration is a separate wiring
++    step, named rather than silently skipped.
++  - `communication_health_check()` is required by `record_evidence_source()`
++    in ethics.py.  The `engaged_with_substance` argument is still
++    caller-supplied judgment (same uncalibrated-threshold-honest status as
++    everywhere else in this project).
++"""
++from __future__ import annotations
++
++import re
++import time
++from typing import Any, Optional
++
++from loci_engine import ethics
++
++# ---------------------------------------------------------------------------
++# Trailer vocabulary
++# ---------------------------------------------------------------------------
++
++#: The canonical regex for commit trailer parsing.  Matches the trailer keyword
++#: (Closes/Helps/Mitigates/RFP/ITP), an optional space, an optional '#', and
++#: the thread/issue ID (digits for git-style, or any non-whitespace string).
++TRAILER_PATTERN = re.compile(
++    r'(?i)(Closes|Helps|Mitigates|RFP|ITP):\s*#?(\S+)',
++)
++
++#: Mapping from trailer keyword (lowercase) to the role_tag written into the
++#: ledger, so downstream readers can filter by role_tag without re-parsing
++#: the trailer keyword.
++TRAILER_ROLE_TAGS: dict[str, str] = {
++    'closes':    'thread_conclusion_stop',
++    'helps':     'thread_evidence_report',
++    'mitigates': 'thread_evidence_mitigate',
++    'rfp':       'thread_evidence_rfp',
++    'itp':       'thread_evidence_itp',
++}
++
++#: Role tags that represent a conclusion (Close / STOP signal).
++CONCLUSION_ROLE_TAGS = frozenset({'thread_conclusion_stop'})
++
++#: Role tags that represent open evidence (topic stays open after these).
++EVIDENCE_ROLE_TAGS = frozenset({
++    'thread_evidence_report',
++    'thread_evidence_mitigate',
++    'thread_evidence_rfp',
++    'thread_evidence_itp',
++})
++
++
++# ---------------------------------------------------------------------------
++# Core routing functions
++# ---------------------------------------------------------------------------
++
++def post_evidence(
++    ledger: "ethics.ProvenanceLedger",
++    topic: str,
++    author_id: str,
++    summary: str,
++    trailer_keyword: str,
++    engaged_with_substance: bool = True,
++    source_description: str = "",
++    now: float | None = None,
++) -> dict:
++    """Route an evidence-class trailer (Helps / Mitigates / RFP / ITP) into
++    the ledger via `ethics.record_evidence_source`.
++
++    `engaged_with_substance` is the communication_health_check result — see
++    ethics.py's own docstring: "a judgment call the caller must supply."
++    Defaults to True for commit-context posts (the act of writing a trailer
++    in a commit message is itself a form of substantive engagement), but the
++    caller can override for cases where communication health is questionable.
++
++    Returns the dict from `record_evidence_source`, which includes the ledger
++    entry hash and the communication_health_check result.
++    """
++    now = time.time() if now is None else now
++    keyword = trailer_keyword.lower()
++    role_tag = TRAILER_ROLE_TAGS.get(keyword, f'thread_evidence_{keyword}')
++
++    health = ethics.communication_health_check(
++        engaged_with_substance=engaged_with_substance,
++    )
++
++    # source_id encodes the trailer keyword + short summary so downstream
++    # readers can distinguish multiple evidence entries on the same topic
++    # without having to parse the description field.
++    source_id = f"{trailer_keyword.upper()}:{summary[:80]}"
++
++    result = ethics.record_evidence_source(
++        ledger=ledger,
++        topic=topic,
++        source_id=source_id,
++        description=source_description or f"[{trailer_keyword}] {summary}",
++        communication_health=health,
++        now=now,
++    )
++    return {**result, 'role_tag': role_tag, 'topic': topic}
++
++
++def post_conclusion(
++    ledger: "ethics.ProvenanceLedger",
++    topic: str,
++    author_id: str,
++    conclusion: str,
++    acknowledged_prior_hashes: list[str],
++    now: float | None = None,
++) -> dict:
++    """Route a Closes trailer into the ledger via `ethics.record_conclusion`.
++
++    The sync-before-conclusion gate fires here: if any prior ledger entries
++    for this topic have not been acknowledged (passed in
++    `acknowledged_prior_hashes`), the conclusion is refused and the
++    unacknowledged entries are returned so the caller can surface them.
++
++    This is the Aethel OS STOP signal — it does not delete or suppress prior
++    evidence; it records that the thread is considered resolved, subject to
++    the gate having passed.
++    """
++    now = time.time() if now is None else now
++    return ethics.record_conclusion(
++        ledger=ledger,
++        author_id=author_id,
++        topic=topic,
++        conclusion=conclusion,
++        acknowledged_prior_hashes=acknowledged_prior_hashes,
++        now=now,
++    )
++
++
++# ---------------------------------------------------------------------------
++# Trailer parser — commit message → routing calls
++# ---------------------------------------------------------------------------
++
++def parse_trailers(text: str) -> list[dict]:
++    """Extract all Aethel OS trailers from a commit message (or any text).
++
++    Returns a list of dicts, one per match::
++
++        {
++            'keyword':  'Closes',         # original case from the text
++            'topic':    '42',             # the thread/issue ID as a string
++            'role_tag': 'thread_conclusion_stop',
++            'is_conclusion': True,
++        }
++
++    Does not touch the ledger — this is a pure parse step so callers can
++    inspect what would be posted before committing to the write.
++    """
++    matches = []
++    for m in TRAILER_PATTERN.finditer(text):
++        keyword = m.group(1)
++        topic   = m.group(2)
++        role_tag = TRAILER_ROLE_TAGS.get(keyword.lower(), f'thread_evidence_{keyword.lower()}')
++        matches.append({
++            'keyword':       keyword,
++            'topic':         topic,
++            'role_tag':      role_tag,
++            'is_conclusion': role_tag in CONCLUSION_ROLE_TAGS,
++        })
++    return matches
++
++
++def route_commit_message(
++    ledger: "ethics.ProvenanceLedger",
++    commit_message: str,
++    author_id: str,
++    acknowledged_prior_hashes: dict[str, list[str]] | None = None,
++    engaged_with_substance: bool = True,
++    now: float | None = None,
++) -> list[dict]:
++    """Parse every Aethel OS trailer in `commit_message` and route each one
++    to the correct ledger call.
++
++    `acknowledged_prior_hashes` is a dict keyed by topic string, mapping each
++    topic to the list of ledger entry hashes the caller is acknowledging before
++    a Closes trailer.  Required for any Closes trailer to succeed; if a topic
++    appears in a Closes trailer but is absent from `acknowledged_prior_hashes`,
++    that trailer is routed as if `acknowledged_prior_hashes=[]` for that topic
++    (which will cause the sync-before-conclusion gate to refuse it and return
++    the unacknowledged entries).
++
++    Returns one result dict per trailer, in the order they appeared in the
++    message.  Each dict includes `accepted` (True/False), `topic`, `role_tag`,
++    and either the ledger entry hash (on success) or the `unacknowledged_entries`
++    (when a Closes trailer was refused by the gate).
++    """
++    now = time.time() if now is None else now
++    ack = acknowledged_prior_hashes or {}
++    trailers = parse_trailers(commit_message)
++    results  = []
++
++    for trailer in trailers:
++        topic   = trailer['topic']
++        keyword = trailer['keyword']
++
++        if trailer['is_conclusion']:
++            result = post_conclusion(
++                ledger=ledger,
++                topic=topic,
++                author_id=author_id,
++                conclusion=commit_message,
++                acknowledged_prior_hashes=ack.get(topic, []),
++                now=now,
++            )
++            results.append({**result, 'keyword': keyword, 'topic': topic,
++                             'role_tag': trailer['role_tag']})
++        else:
++            result = post_evidence(
++                ledger=ledger,
++                topic=topic,
++                author_id=author_id,
++                summary=commit_message,
++                trailer_keyword=keyword,
++                engaged_with_substance=engaged_with_substance,
++                now=now,
++            )
++            results.append({**result, 'keyword': keyword})
++
++    return results
++
++
++# ---------------------------------------------------------------------------
++# Thread state queries
++# ---------------------------------------------------------------------------
++
++def open_threads(ledger: "ethics.ProvenanceLedger") -> list[dict]:
++    """Return every topic that has at least one evidence entry but no accepted
++    conclusion yet.
++
++    O(ledger size) — full scan over all entries.  Acceptable for the current
++    append-only `.jsonl` store; a future indexed store would need only a
++    topic-keyed index.
++
++    A topic is "open" when:
++      - At least one entry with a role_tag in EVIDENCE_ROLE_TAGS exists for it, AND
++      - No entry with a role_tag in CONCLUSION_ROLE_TAGS AND accepted=True exists.
++
++    Returns a list of dicts::
++
++        {
++            'topic':          '42',
++            'evidence_count': 3,
++            'last_activity':  1730305800.0,   # Unix timestamp
++            'authors':        ['ARKO', 'ARC'],
++        }
++    """
++    topic_evidence: dict[str, dict] = {}
++    closed_topics:  set[str]        = set()
++
++    for entry in ledger.entries():
++        payload  = entry.get('payload', {})
++        role_tag = payload.get('role_tag', entry.get('role_tag', ''))
++        topic    = payload.get('topic') or payload.get('extra_payload', {}).get('topic')
++
++        if topic is None:
++            continue
++
++        if role_tag in CONCLUSION_ROLE_TAGS:
++            # Only a conclusion that the gate accepted counts as closed.
++            if payload.get('accepted', True):   # default True: older records pre-gate
++                closed_topics.add(topic)
++        elif role_tag in EVIDENCE_ROLE_TAGS:
++            rec = topic_evidence.setdefault(topic, {
++                'topic': topic, 'evidence_count': 0,
++                'last_activity': 0.0, 'authors': [],
++            })
++            rec['evidence_count'] += 1
++            ts = entry.get('ts', 0.0)
++            if ts > rec['last_activity']:
++                rec['last_activity'] = ts
++            aid = entry.get('author_id', '')
++            if aid and aid not in rec['authors']:
++                rec['authors'].append(aid)
++
++    return [v for k, v in topic_evidence.items() if k not in closed_topics]
++
++
++def thread_status(
++    ledger: "ethics.ProvenanceLedger",
++    topic: str,
++    conn: Any | None = None,
++) -> dict:
++    """Return the full status of a single thread.
++
++    Wraps `ethics.data_completeness_check` (evidence health) and, if an
++    aethel_council `conn` is provided, also calls
++    `aethel_council.has_every_member_been_heard` for the given topic.
++
++    Returns::
++
++        {
++            'topic':               '42',
++            'data_completeness':   {...},   # from ethics.data_completeness_check
++            'council_gate':        {...},   # from aethel_council (if conn supplied)
++            'open':                True,    # False once a conclusion is accepted
++            'conclusion':          None,    # the accepted conclusion payload, if any
++        }
++    """
++    # Gather all entries for this topic
++    topic_entries = [
++        e for e in ledger.entries()
++        if (e.get('payload', {}).get('topic') == topic or
++            e.get('payload', {}).get('extra_payload', {}).get('topic') == topic)
++    ]
++
++    # Check for an accepted conclusion
++    conclusion_entry = None
++    for e in topic_entries:
++        role_tag = e.get('payload', {}).get('role_tag', '')
++        if role_tag in CONCLUSION_ROLE_TAGS and e.get('payload', {}).get('accepted', True):
++            conclusion_entry = e.get('payload')
++            break
++
++    # data_completeness_check expects a topic string; it will scan the ledger
++    completeness = ethics.data_completeness_check(ledger=ledger, topic=topic)
++
++    status: dict = {
++        'topic':             topic,
++        'data_completeness': completeness,
++        'council_gate':      None,
++        'open':              conclusion_entry is None,
++        'conclusion':        conclusion_entry,
++    }
++
++    if conn is not None:
++        try:
++            from loci_engine import aethel_council
++            status['council_gate'] = aethel_council.has_every_member_been_heard(
++                conn=conn, topic=topic
++            )
++        except Exception as exc:
++            status['council_gate'] = {
++                'error': str(exc),
++                'note': 'aethel_council query failed — conn may not have the council schema',
++            }
++
++    return status
++
++
++# ---------------------------------------------------------------------------
++# Convenience: list all topics with any ledger activity
++# ---------------------------------------------------------------------------
++
++def known_topics(ledger: "ethics.ProvenanceLedger") -> list[str]:
++    """Return a deduplicated, sorted list of every topic that has at least one
++    ledger entry, open or closed.  Cheap alternative to `open_threads` when
++    only the topic IDs are needed."""
++    seen: set[str] = set()
++    for entry in ledger.entries():
++        payload = entry.get('payload', {})
++        t = payload.get('topic') or payload.get('extra_payload', {}).get('topic')
++        if t:
++            seen.add(t)
++    return sorted(seen)
+diff --git a/tests/test_ethics.py b/tests/test_ethics.py
+new file mode 100644
+index 0000000..e3c5698
+--- /dev/null
++++ b/tests/test_ethics.py
+@@ -0,0 +1,118 @@
++"""
++Tests for loci_engine.ethics — observe-only valence, conflict, trust, and
++provenance layer (Philosophical Spine; Clusters A4, B3-B10, B14).
++
++These tests cover the parts of ethics.py that integrate with the rest of
++the unified codebase: trust-pattern tracking via store.py, scar heat via
++heat.py, and the provenance ledger's own conclusion/evidence machinery.
++Every function here is observe-only — these tests assert what gets
++recorded and returned, never that anything was blocked or executed.
++"""
++
++import os
++import tempfile
++import unittest
++
++from loci_engine import ethics, store
++
++
++class TestScoreVexec(unittest.TestCase):
++    def test_open_interval_bounds(self):
++        v = ethics.score_vexec(intent=1.0, consent=1.0)
++        self.assertLess(v, 1.0)
++        self.assertGreater(v, -1.0)
++
++
++class TestIrreversibleActionGate(unittest.TestCase):
++    def test_flags_irreversible_destructive_action(self):
++        result = ethics.irreversible_action_gate(
++            is_irreversible_or_destructive=True,
++            user_shows_nontechnical_pattern=True,
++        )
++        self.assertIsInstance(result, dict)
++
++
++class TestPatternTrustViaStore(unittest.TestCase):
++    """record_pattern_trust_event / record_confirmed_breach are ethics.py's
++    bridge into store.py — this is the integration seam this unification
++    pass exists to prove works end-to-end."""
++
++    def setUp(self):
++        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
++        self.temp_db.close()
++        self.conn = store.open_db(self.temp_db.name)
++
++    def tearDown(self):
++        self.conn.close()
++        os.unlink(self.temp_db.name)
++
++    def test_first_touch_creates_entity_with_valid_tier(self):
++        result = ethics.record_pattern_trust_event(
++            self.conn, "unify_test_pattern", hop=0.1, now=0.0
++        )
++        self.assertEqual(result["pattern"], "unify_test_pattern")
++        self.assertIn(result["tier"], {"hot", "warm", "cool", "cold"})
++        self.assertGreater(result["trust_heat"], 0.0)
++        self.assertLess(result["trust_heat"], 1.0)
++
++    def test_repeated_touches_reinforce_trust(self):
++        ethics.record_pattern_trust_event(self.conn, "p2", hop=0.2, now=0.0)
++        later = ethics.record_pattern_trust_event(self.conn, "p2", hop=0.2, now=1.0)
++        self.assertGreater(later["trust_heat"], 0.0)
++
++    def test_confirmed_breach_is_recorded(self):
++        ethics.record_pattern_trust_event(self.conn, "p3", hop=0.3, now=0.0)
++        breach = ethics.record_confirmed_breach(self.conn, "p3", now=1.0)
++        self.assertIsInstance(breach, dict)
++
++
++class TestProvenanceLedgerFlow(unittest.TestCase):
++    """Exercises the evidence -> conclusion -> completeness-check chain
++    that threads.py and aethel_council.py both build on top of."""
++
++    def setUp(self):
++        self.ledger = ethics.ProvenanceLedger()
++
++    def test_record_and_check_single_source(self):
++        health = ethics.communication_health_check(True)
++        ethics.record_evidence_source(
++            self.ledger,
++            topic="unify_topic",
++            source_id="src_1",
++            description="first source",
++            communication_health=health,
++            now=0.0,
++        )
++        check = ethics.data_completeness_check(self.ledger, "unify_topic", now=1.0)
++        self.assertIsInstance(check, dict)
++
++    def test_conclusion_is_recorded_with_provenance(self):
++        result = ethics.record_conclusion(
++            self.ledger,
++            author_id="ARKO",
++            topic="unify_topic",
++            conclusion="test conclusion",
++            now=0.0,
++        )
++        self.assertIsInstance(result, dict)
++        entries = ethics.entries_for_topic(self.ledger, "unify_topic")
++        self.assertTrue(len(entries) >= 1)
++
++
++class TestScarMechanism(unittest.TestCase):
++    """Scar heat must re-derive from the full ledger history via heat.py,
++    never from a single cached scalar — same discipline as store.py."""
++
++    def test_scar_event_and_heat_round_trip(self):
++        ledger = ethics.ProvenanceLedger()
++        ethics.record_scar_event(
++            ledger, "unify_scar", relevance=1.0, valence_weight=-1.0, now=0.0
++        )
++        heat_info = ethics.get_scar_heat(ledger, "unify_scar", now=1.0)
++        self.assertGreater(heat_info["scar_heat"], 0.0)
++        self.assertLess(heat_info["scar_heat"], 1.0)
++        self.assertTrue(heat_info["never_reaches_one"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_heat.py b/tests/test_heat.py
+new file mode 100644
+index 0000000..74eee9e
+--- /dev/null
++++ b/tests/test_heat.py
+@@ -0,0 +1,97 @@
++"""
++Tests for loci_engine.heat — the Learning Core (A1/A2/A3 primitives).
++
++Verifies the open-interval invariants hold for the extracted evidence_
++accumulation()/evidence_heat() functions, and that ethical_core.py's
++compute_evidence()/compute_heat() delegate to them without drift.
++"""
++
++import unittest
++
++from loci_engine.ethical_core import compute_evidence, compute_heat
++from loci_engine.heat import (
++    MEMORY_CLASSES,
++    decay,
++    evidence_accumulation,
++    evidence_heat,
++    tier,
++)
++
++
++class TestEvidenceAccumulation(unittest.TestCase):
++    def test_ignores_future_events(self):
++        events = [(100.0, 1.0, 1.0)]
++        e = evidence_accumulation(events, now=50.0, tau=45.0)
++        self.assertEqual(e, 0.0)
++
++    def test_accumulates_past_events(self):
++        events = [(0.0, 1.0, 1.0), (1.0, 1.0, 1.0)]
++        e = evidence_accumulation(events, now=10.0, tau=45.0)
++        self.assertGreater(e, 0.0)
++
++    def test_defaults_to_formative_scar_tau(self):
++        events = [(0.0, 1.0, 1.0)]
++        e_default = evidence_accumulation(events, now=10.0)
++        e_explicit = evidence_accumulation(
++            events, now=10.0, tau=MEMORY_CLASSES["formative_scar"].tau_days
++        )
++        self.assertEqual(e_default, e_explicit)
++
++
++class TestEvidenceHeat(unittest.TestCase):
++    def test_open_interval_never_reaches_zero(self):
++        h = evidence_heat(0.0, alpha=0.14)
++        self.assertGreater(h, 0.14)
++
++    def test_open_interval_never_reaches_one(self):
++        h = evidence_heat(1_000_000.0, alpha=0.14)
++        self.assertLess(h, 1.0)
++
++    def test_rejects_alpha_outside_open_interval(self):
++        with self.assertRaises(ValueError):
++            evidence_heat(1.0, alpha=0.0)
++        with self.assertRaises(ValueError):
++            evidence_heat(1.0, alpha=1.0)
++
++    def test_defaults_to_formative_scar_alpha(self):
++        h_default = evidence_heat(1.0)
++        h_explicit = evidence_heat(1.0, alpha=MEMORY_CLASSES["formative_scar"].alpha)
++        self.assertEqual(h_default, h_explicit)
++
++
++class TestTier(unittest.TestCase):
++    def test_tier_boundaries(self):
++        self.assertEqual(tier(0.9), "hot")
++        self.assertEqual(tier(0.6), "warm")
++        self.assertEqual(tier(0.3), "cool")
++        self.assertEqual(tier(0.1), "cold")
++
++
++class TestDecay(unittest.TestCase):
++    def test_decay_reduces_heat_over_time(self):
++        h0 = 0.8
++        h1 = decay(h0, elapsed=45.0, tau=45.0)
++        self.assertLess(h1, h0)
++        self.assertAlmostEqual(h1, 0.4)
++
++
++class TestEthicalCoreDelegation(unittest.TestCase):
++    """compute_evidence/compute_heat in ethical_core.py must produce
++    identical results to heat.py's evidence_accumulation/evidence_heat —
++    there is exactly one implementation of this math in the codebase."""
++
++    def test_compute_evidence_matches_heat_module(self):
++        observations = [{"t_j": 0.0, "r_j": 1.0, "w_j": 1.0}]
++        events = [(0.0, 1.0, 1.0)]
++        a = compute_evidence(observations, tau_k=45.0, t=10.0)
++        b = evidence_accumulation(events, now=10.0, tau=45.0)
++        self.assertEqual(a, b)
++
++    def test_compute_heat_matches_heat_module(self):
++        a = compute_heat(0.8, alpha_k=0.14)
++        b = evidence_heat(0.8, alpha=0.14)
++        self.assertEqual(a, b)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_store.py b/tests/test_store.py
+new file mode 100644
+index 0000000..cf6e6be
+--- /dev/null
++++ b/tests/test_store.py
+@@ -0,0 +1,64 @@
++"""
++Tests for loci_engine.store — entity-level persistence on top of
++storage.py's context2.db, with heat always re-derived from the full
++event history (never cached as a drifting mutable scalar).
++"""
++
++import os
++import tempfile
++import unittest
++
++from loci_engine import store
++
++
++class TestStoreEntities(unittest.TestCase):
++    def setUp(self):
++        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
++        self.temp_db.close()
++        self.conn = store.open_db(self.temp_db.name)
++
++    def tearDown(self):
++        self.conn.close()
++        os.unlink(self.temp_db.name)
++
++    def test_get_missing_entity_returns_none(self):
++        self.assertIsNone(store.get_entity(self.conn, "nope", now=0.0))
++
++    def test_remember_entity_is_idempotent(self):
++        a = store.remember_entity(self.conn, "pattern_a", gist="first call", now=0.0)
++        b = store.remember_entity(self.conn, "pattern_a", gist="second call", now=1.0)
++        self.assertEqual(a["id"], b["id"])
++        # gist from the second call must not overwrite the first
++        self.assertEqual(a["canonical_text"], "first call")
++
++    def test_touch_entity_requires_existing_entity(self):
++        with self.assertRaises(KeyError):
++            store.touch_entity(self.conn, "nonexistent", now=0.0)
++
++    def test_touch_entity_reinforces_heat_over_time(self):
++        store.remember_entity(self.conn, "pattern_b", gist="trust me", now=0.0)
++        h1 = store.touch_entity(self.conn, "pattern_b", hop=0.1, now=0.0)
++        h2 = store.touch_entity(self.conn, "pattern_b", hop=0.1, now=1.0)
++        self.assertGreater(h2, h1)
++
++    def test_heat_never_reaches_open_interval_bounds(self):
++        store.remember_entity(self.conn, "pattern_c", gist="stress test", now=0.0)
++        heat = 0.0
++        for i in range(50):
++            heat = store.touch_entity(self.conn, "pattern_c", hop=0.3, now=float(i))
++        self.assertLess(heat, 1.0)
++        self.assertGreater(heat, 0.0)
++
++    def test_get_entity_rederives_heat_not_cached(self):
++        """Reading heat twice at different 'now' values without touching
++        must produce different heat — proof it's recomputed, not read
++        back verbatim from a stored column."""
++        store.remember_entity(self.conn, "pattern_d", gist="aging test", now=0.0)
++        store.touch_entity(self.conn, "pattern_d", hop=0.2, now=0.0)
++        record_soon = store.get_entity(self.conn, "pattern_d", now=1.0)
++        record_later = store.get_entity(self.conn, "pattern_d", now=1000.0)
++        self.assertNotEqual(record_soon["heat"], record_later["heat"])
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.43.0
+

@@ -60,6 +60,7 @@ from loci_engine.gpu_governor import (
     allocate_task as gpu_allocate_task,
     complete_task as gpu_complete_task,
     get_model_allocation_plan,
+    route_inference,
 )
 
 storage = StorageEngine()
@@ -444,6 +445,18 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {}
+        }
+    },
+    {
+        "name": "gpu_route",
+        "description": "Route a model to the best available GPU. Returns the Ollama endpoint URL and GPU key for seamless dual-GPU inference.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string", "description": "Model name to route"},
+                "vram_estimate_mb": {"type": "integer", "description": "Estimated VRAM needed in MB (0 = auto)", "default": 0}
+            },
+            "required": ["model"]
         }
     }
 ]
@@ -883,6 +896,16 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
 
         elif tool_name == "gpu_plan":
             result = get_model_allocation_plan()
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "gpu_route":
+            result = route_inference(
+                model=args.get("model", "loci-agent"),
+                vram_estimate_mb=args.get("vram_estimate_mb", 0),
+            )
             return {
                 "jsonrpc": "2.0", "id": req_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}

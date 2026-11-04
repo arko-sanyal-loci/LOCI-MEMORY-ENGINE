@@ -35,12 +35,13 @@ from loci_engine.patience_protocol import (
 from loci_engine.gpu_governor import (
     get_full_gpu_status, allocate_task as gpu_allocate_task,
     complete_task as gpu_complete_task, get_model_allocation_plan,
+    route_inference, OLLAMA_ENDPOINTS,
 )
 
 _engine = StorageEngine()
 router = APIRouter(prefix="/loci", tags=["LOCI Engine Bridge"])
 
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_DEFAULT = "http://127.0.0.1:11434"
 
 
 def _utc_iso() -> str:
@@ -377,6 +378,11 @@ async def bridge_gpu_plan():
     return get_model_allocation_plan()
 
 
+@router.get("/gpu/route/{model}")
+async def bridge_gpu_route(model: str, vram_mb: int = 0):
+    return route_inference(model=model, vram_estimate_mb=vram_mb)
+
+
 # ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
@@ -436,6 +442,10 @@ class OllamaGenerateReq(BaseModel):
 async def bridge_ollama_generate(req: OllamaGenerateReq):
     import httpx
 
+    routing = route_inference(model=req.model)
+    endpoint = routing.get("endpoint") or OLLAMA_DEFAULT
+    routed_gpu = routing.get("gpu", "nvidia_rtx_5060_ti")
+
     payload: Dict[str, Any] = {
         "model": req.model,
         "prompt": req.prompt,
@@ -451,20 +461,20 @@ async def bridge_ollama_generate(req: OllamaGenerateReq):
     glassbox_learn(
         author_id=req.agent_id,
         role_tag="inference",
-        content=f"Ollama inference requested: model={req.model}, prompt_len={len(req.prompt)}",
+        content=f"Ollama inference routed: model={req.model}, gpu={routed_gpu}, endpoint={endpoint}, reason={routing.get('reason', '')}",
         category="event",
     )
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(f"{OLLAMA_BASE}/api/generate", json=payload)
+            resp = await client.post(f"{endpoint}/api/generate", json=payload)
             resp.raise_for_status()
             result = resp.json()
 
         glassbox_learn(
             author_id=req.agent_id,
             role_tag="inference",
-            content=f"Ollama inference completed: model={req.model}, tokens={result.get('eval_count', 0)}, duration={result.get('eval_duration', 0)/1e9:.1f}s",
+            content=f"Ollama inference completed: model={req.model}, gpu={routed_gpu}, tokens={result.get('eval_count', 0)}, duration={result.get('eval_duration', 0)/1e9:.1f}s",
             category="observation",
         )
 
@@ -474,10 +484,12 @@ async def bridge_ollama_generate(req: OllamaGenerateReq):
             "eval_count": result.get("eval_count", 0),
             "eval_duration_s": round(result.get("eval_duration", 0) / 1e9, 2),
             "agent_id": req.agent_id,
+            "routed_gpu": routed_gpu,
+            "routing_reason": routing.get("reason", ""),
             "logged_to_glassbox": True,
         }
     except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Ollama not reachable at localhost:11434")
+        raise HTTPException(status_code=503, detail=f"Ollama not reachable at {endpoint}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -506,6 +518,12 @@ async def bridge_system_status():
         "memory": {"active_items": mem_count, "namespaces": namespaces},
         "glassbox": gb_stats,
         "feedback": fb_stats,
-        "mcp_tools": 30,
+        "mcp_tools": 31,
+        "mcp_transport": {
+            "stdio": "active",
+            "sse": "planned",
+        },
         "bridge": "active",
+        "bridge_routes": 31,
+        "ollama_endpoints": OLLAMA_ENDPOINTS,
     }

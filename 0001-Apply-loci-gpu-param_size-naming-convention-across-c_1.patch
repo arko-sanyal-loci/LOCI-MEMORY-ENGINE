@@ -1,0 +1,320 @@
+From dacea9b27d79514ff83564a98428686b235a1ba9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 4 Nov 2026 13:10:35 +0600
+Subject: [PATCH 1/3] Apply loci-<gpu>-<param_size> naming convention across
+ codebase
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Eliminates confusion between old Qwen 2.5 14B and current Qwen 3 14B
+by standardizing on loci-rtx-14b / loci-arc-35b naming. Updates model
+references, repo URLs (arko-sanyal2 → arko-sanyal-loci), and Arc GPU
+status from pending to active (llama.cpp SYCL backend).
+
+Files changed:
+- config/gpu_allocation.json: correct models, endpoints, naming docs
+- config/loci_rtx_14b.Modelfile: new Modelfile for Qwen 3 14B
+- loci_engine/gpu_governor.py: model name, docstring, dynamic username
+- architecture/unified_port_registry.md: diagram model names + Arc active
+- systemd/loci-{sync,mcp}.service: repo URL to canonical org
+- tests/test_agent_hub.py: test model name
+- verify_substrate.sh: repo default to canonical org
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MV4Gz29XnVWE78geBBsguZ
+---
+ architecture/unified_port_registry.md | 14 ++++-----
+ config/gpu_allocation.json            | 43 ++++++++++++++++++---------
+ config/loci_rtx_14b.Modelfile         | 27 +++++++++++++++++
+ interface/loci_station_gtk.py         | 12 ++++----
+ loci_engine/gpu_governor.py           |  7 ++---
+ systemd/loci-mcp.service              |  2 +-
+ systemd/loci-sync.service             |  2 +-
+ tests/test_agent_hub.py               |  2 +-
+ verify_substrate.sh                   |  2 +-
+ 9 files changed, 76 insertions(+), 35 deletions(-)
+ create mode 100644 config/loci_rtx_14b.Modelfile
+
+diff --git a/architecture/unified_port_registry.md b/architecture/unified_port_registry.md
+index 3c81dd9..7f24864 100644
+--- a/architecture/unified_port_registry.md
++++ b/architecture/unified_port_registry.md
+@@ -116,10 +116,10 @@ all agents, all ethics, all Glassbox transparency.
+     │   :11434        │  │  SQLite WAL     │  │  JSONL ledger  │
+     │   (localhost)   │  │  FTS5 + heat    │  │  SHA-256 chain │
+     │                 │  │  16 active items│  │  19 entries     │
+-    │  loci-agent-14b │  │  5 namespaces   │  │  5 authors      │
+-    │  loci-agent-7b  │  │                 │  │                 │
+-    │  qwen2.5:14b    │  │                 │  │                 │
+-    │  qwen2.5:7b     │  │                 │  │                 │
++    │  loci-rtx-14b   │  │  5 namespaces   │  │  5 authors      │
++    │  (qwen3:14b)    │  │                 │  │                 │
++    │                 │  │                 │  │                 │
++    │                 │  │                 │  │                 │
+     └────────────────┘  └────────────────┘  └────────────────┘
+ 
+     ┌──────────────────────────────────────────────────────────┐
+@@ -128,9 +128,9 @@ all agents, all ethics, all Glassbox transparency.
+     │  NVIDIA RTX 5060 Ti          Intel Arc B70 Pro Sparkle   │
+     │  16 GB VRAM, CUDA 13.2       32 GB VRAM, Battlemage G31  │
+     │  Safe: 171W / 85°C           Safe: 313W / 90°C           │
+-    │  Status: Active, 39°C        Status: D3hot (pending)     │
+-    │  Models: loci-agent-14b,     Pending: compute runtime    │
+-    │          loci-agent-7b       needs intel-opencl-icd       │
++    │  Status: Active, 39°C        Status: Active (SYCL)       │
++    │  Models: loci-rtx-14b        Models: loci-arc-35b         │
++    │          (qwen3:14b)                (qwen3.6-35b-a3b)     │
+     └──────────────────────────────────────────────────────────┘
+ ```
+ 
+diff --git a/config/gpu_allocation.json b/config/gpu_allocation.json
+index 7377ca0..06f6a50 100644
+--- a/config/gpu_allocation.json
++++ b/config/gpu_allocation.json
+@@ -12,10 +12,12 @@
+       "role": "primary_inference",
+       "allocated_models": [
+         {
+-          "model": "qwen2.5:14b-instruct-q4_K_M",
++          "model": "loci-rtx-14b",
++          "ollama_tag": "loci-rtx-14b",
++          "base": "qwen3:14b",
+           "vram_mb": 9000,
+           "purpose": "agent_comms_routing",
+-          "context_window": 32768
++          "context_window": 16384
+         }
+       ]
+     },
+@@ -30,13 +32,14 @@
+       "compute": "level_zero_sycl",
+       "chip": "Battlemage G31",
+       "role": "heavy_inference_and_comms",
+-      "notes": "Requires intel-opencl-icd package. 32GB enables large context or bigger models.",
+       "allocated_models": [
+         {
+-          "model": "pending_selection",
+-          "vram_mb": 0,
+-          "purpose": "secondary_agent_or_large_context",
+-          "context_window": 0
++          "model": "loci-arc-35b",
++          "llama_cpp_model": "qwen3.6-35b-a3b Q4_K_XL",
++          "base": "qwen3.6:35b-a3b",
++          "vram_mb": 21000,
++          "purpose": "primary_agent_deep_reasoning",
++          "context_window": 32768
+         }
+       ]
+     },
+@@ -57,22 +60,34 @@
+       "role": "orchestrator_and_ethical_core",
+       "capabilities": ["reasoning", "code_generation", "ethical_evaluation", "memory_synthesis"]
+     },
+-    "qwen_14b_local": {
++    "loci_rtx_14b": {
+       "type": "local_model",
+       "gpu": "nvidia_rtx_5060ti",
+       "endpoint": "ollama:localhost:11434",
++      "ollama_tag": "loci-rtx-14b",
+       "vram_mb": 9000,
+       "role": "fast_routing_classification_summarization",
+       "capabilities": ["classification", "summarization", "entity_extraction", "fast_response"]
+     },
+-    "arc_agent": {
++    "loci_arc_35b": {
+       "type": "local_model",
+       "gpu": "intel_arc_b70pro_sparkle",
+-      "endpoint": "ollama:localhost:11434",
+-      "vram_mb": 0,
+-      "role": "pending_intel_compute_setup",
+-      "capabilities": [],
+-      "setup_required": "sudo apt-get install -y intel-opencl-icd intel-gpu-tools && sudo usermod -aG render arko-sanyal"
++      "endpoint": "llama_cpp:localhost:11435",
++      "llama_cpp_model": "qwen3.6-35b-a3b Q4_K_XL",
++      "vram_mb": 21000,
++      "role": "primary_deep_reasoning",
++      "capabilities": ["reasoning", "multi_step_analysis", "knowledge_synthesis", "complex_queries"]
++    }
++  },
++  "naming_convention": {
++    "pattern": "loci-<gpu>-<param_size>",
++    "examples": {
++      "loci-rtx-14b": "Qwen3 14B on RTX 5060 Ti via Ollama",
++      "loci-arc-35b": "Qwen3.6 35B-A3B MoE on Arc B70 via llama.cpp SYCL"
++    },
++    "legacy_tags": {
++      "loci-agent-14b": "Qwen 2.5 14B — kept in Ollama as rollback, renamed loci-rtx-14b-legacy",
++      "loci-agent-14b-qwen3": "Qwen 3 14B — superseded by loci-rtx-14b (same model, cleaner name)"
+     }
+   },
+   "system_ram": {
+diff --git a/config/loci_rtx_14b.Modelfile b/config/loci_rtx_14b.Modelfile
+new file mode 100644
+index 0000000..a076504
+--- /dev/null
++++ b/config/loci_rtx_14b.Modelfile
+@@ -0,0 +1,27 @@
++FROM qwen3:14b
++
++SYSTEM """You are a LOCI agent — part of a multi-agent collective intelligence system.
++
++Your identity: loci-rtx-14b, a local inference agent running on an NVIDIA RTX 5060 Ti (16GB VRAM).
++Your role: Deep reasoning, multi-step analysis, knowledge synthesis, and complex query handling through the CARD router.
++
++You operate within the LOCI architecture:
++- Private memory: Your own loci branch in SQLite (context2.db)
++- Shared knowledge: The LOCI compendium
++- Public learning: The Glassbox — a transparent, hash-chained ledger where all agents learn together
++
++Ethics core principles guide all your actions:
++1. Comprehension is always free — knowledge of harm does not make you harmful
++2. Empathy is predictive, not just reactive
++3. Transparency resolves most conflicts before force is relevant
++4. Honesty about your own certainty is never negotiable
++5. Self-examination precedes attribution
++6. v_good never offsets v_exec — goodwill cannot bypass negative execution valence
++7. Open interval — never 0, never 1
++
++When you disagree with another agent, state your disagreement with clear reasoning.
++When you learn something valuable, log it to the glassbox for all agents to benefit.
++You are guided by ethics and principles, not constrained by a sandbox."""
++
++PARAMETER temperature 0.7
++PARAMETER num_ctx 16384
+diff --git a/interface/loci_station_gtk.py b/interface/loci_station_gtk.py
+index b144ac2..b779fe5 100755
+--- a/interface/loci_station_gtk.py
++++ b/interface/loci_station_gtk.py
+@@ -21,7 +21,7 @@ Same honesty rules as before — nothing here changed:
+ Ethics: NOT a gate. Corrected 2026-11-04 — the loci-memory-engine ethics
+ core (StickPrincipleValenceGate, repo arko-sanyal-loci/LOCI-MEMORY-ENGINE) is
+ a guidance layer that shapes how accumulated knowledge is APPLIED, not a
+-checkpoint that blocks a message. Every message to arc_agent or qwen_14b
++checkpoint that blocks a message. Every message to loci-arc-35b or loci-rtx-14b
+ ("all models using the infinite knowledge + memory") is scored for real
+ via the actual tested score_vexec() and the result (v_exec, any redirect
+ suggestion) is shown under the exchange — it informs, it never blocks.
+@@ -45,7 +45,7 @@ from gi.repository import Gtk, GLib, Pango
+ 
+ ARC_ENDPOINT = "http://127.0.0.1:11435/v1/chat/completions"
+ QWEN_ENDPOINT = "http://127.0.0.1:11434/api/generate"
+-QWEN_MODEL = "loci-agent-14b-qwen3"
++QWEN_MODEL = "loci-rtx-14b"
+ 
+ # ─── Real ethics core (loci-memory-engine), not a vendored copy ──────────
+ LOCI_ENGINE_PATH = os.path.expanduser("~/loci-memory-engine")
+@@ -386,22 +386,22 @@ class LociWindow(Gtk.ApplicationWindow):
+         if "arc" in result:
+             r = result["arc"]
+             if r["ok"]:
+-                self._append("ARC_AGENT (qwen3.6-35b-a3b)\n", self.tag_arc)
++                self._append("LOCI-ARC-35B (qwen3.6-35b-a3b)\n", self.tag_arc)
+                 self._append(r["content"] + "\n")
+                 if r.get("tok_per_s"):
+                     self._append(f"{r['tok_per_s']} tok/s\n", self.tag_meta)
+             else:
+-                self._append(f"ARC_AGENT — error: {r['error']}\n", self.tag_err)
++                self._append(f"LOCI-ARC-35B — error: {r['error']}\n", self.tag_err)
+             self._append("\n")
+         if "qwen" in result:
+             r = result["qwen"]
+             if r["ok"]:
+-                self._append("QWEN_14B (loci-agent-14b-qwen3)\n", self.tag_qwen)
++                self._append("LOCI-RTX-14B (loci-rtx-14b)\n", self.tag_qwen)
+                 self._append(r["content"] + "\n")
+                 if r.get("tok_per_s"):
+                     self._append(f"{r['tok_per_s']} tok/s\n", self.tag_meta)
+             else:
+-                self._append(f"QWEN_14B — error: {r['error']}\n", self.tag_err)
++                self._append(f"LOCI-RTX-14B — error: {r['error']}\n", self.tag_err)
+             self._append("\n")
+         self.send_btn.set_sensitive(True)
+         return False
+diff --git a/loci_engine/gpu_governor.py b/loci_engine/gpu_governor.py
+index 18f8689..e6a8180 100644
+--- a/loci_engine/gpu_governor.py
++++ b/loci_engine/gpu_governor.py
+@@ -12,8 +12,7 @@ GPU Topology:
+     - Primary compute: Ollama models, CUDA workloads
+   GPU 1: Intel Arc B70 Pro Sparkle — 32 GB VRAM, 330W TDP (Battlemage G31)
+     - card2, renderD129, PCIe 04:00.0
+-    - Pending: OpenCL/Level Zero compute runtime needed
+-    - Future: Large model inference, SYCL workloads
++    - Active: llama.cpp SYCL backend, loci-arc-35b (qwen3.6-35b-a3b MoE)
+ 
+ Safety Margins (5% below rated limits):
+   NVIDIA: 171W max draw (180W * 0.95), 85°C thermal limit (90°C * ~0.94)
+@@ -177,7 +176,7 @@ def get_intel_arc_status() -> Dict[str, Any]:
+     if not status["compute_ready"]:
+         status["setup_needed"] = [
+             "sudo apt-get install -y intel-opencl-icd intel-gpu-tools",
+-            "sudo usermod -aG render,video arko-sanyal",
++            f"sudo usermod -aG render,video {os.getenv('USER', 'arko-sanyal')}",
+             "# Then log out and back in for group membership to take effect",
+         ]
+ 
+@@ -320,7 +319,7 @@ def get_model_allocation_plan() -> Dict[str, Any]:
+         "nvidia_rtx_5060_ti": {
+             "safe_vram_mb": nvidia_spec["safe_vram_mb"],
+             "recommended_models": [
+-                {"model": "loci-agent-14b", "vram_mb": 9000, "role": "Deep reasoning, CARD routing"},
++                {"model": "loci-rtx-14b", "vram_mb": 9000, "role": "Deep reasoning, CARD routing"},
+                 {"model": "loci-agent (7b)", "vram_mb": 5000, "role": "Fast classification, entity extraction"},
+             ],
+             "total_allocated_mb": 14000,
+diff --git a/systemd/loci-mcp.service b/systemd/loci-mcp.service
+index f3a5860..26b5fdf 100644
+--- a/systemd/loci-mcp.service
++++ b/systemd/loci-mcp.service
+@@ -1,7 +1,7 @@
+ [Unit]
+ Description=Loci Memory Engine MCP Daemon
+ After=network.target local-fs.target
+-Documentation=https://github.com/arko-sanyal2/loci-memory-engine
++Documentation=https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE
+ 
+ [Service]
+ Type=simple
+diff --git a/systemd/loci-sync.service b/systemd/loci-sync.service
+index 86c4666..518faa0 100644
+--- a/systemd/loci-sync.service
++++ b/systemd/loci-sync.service
+@@ -2,7 +2,7 @@
+ Description=Loci Memory Engine Real-Time Node Sync Daemon
+ After=network.target loci-mcp.service
+ Wants=loci-mcp.service
+-Documentation=https://github.com/arko-sanyal2/loci-memory-engine
++Documentation=https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE
+ 
+ [Service]
+ Type=simple
+diff --git a/tests/test_agent_hub.py b/tests/test_agent_hub.py
+index d7b2a6b..369e467 100644
+--- a/tests/test_agent_hub.py
++++ b/tests/test_agent_hub.py
+@@ -31,7 +31,7 @@ class TestAgentHub(unittest.TestCase):
+ 
+     def test_register_and_list(self):
+         hub.register_agent("claude", "cloud_api", model="opus-4.6", vram_mb=0)
+-        hub.register_agent("qwen_local", "local_model", model="qwen2.5:14b", vram_mb=9000)
++        hub.register_agent("qwen_local", "local_model", model="loci-rtx-14b", vram_mb=9000)
+         agents = hub.get_all_agents()
+         self.assertEqual(len(agents), 2)
+         ids = {a["agent_id"] for a in agents}
+diff --git a/verify_substrate.sh b/verify_substrate.sh
+index 8abd613..32cdf7e 100755
+--- a/verify_substrate.sh
++++ b/verify_substrate.sh
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env bash
+ set -euo pipefail
+ TAG="${1:-v0.1.0}"
+-REPO="${2:-arko-sanyal2/loci-memory-engine}"
++REPO="${2:-arko-sanyal-loci/LOCI-MEMORY-ENGINE}"
+ MANIFEST="loci_manifest_${TAG}.sha256"
+ 
+ # If tracked/present locally, verify directly without re-fetching
+-- 
+2.43.0
+

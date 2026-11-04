@@ -1,0 +1,34 @@
+# LOCI Unified Architecture — Caddy Reverse Proxy (workstation)
+# Alternative to nginx per BIILOTECH spec (both supported)
+#
+# Install: sudo apt-get install -y caddy
+# Deploy:  sudo cp this_file /etc/caddy/Caddyfile
+#          sudo systemctl reload caddy
+
+{
+	admin off
+}
+
+:80 {
+	@subnet remote_ip 192.168.10.0/24 127.0.0.0/8
+
+	# Sovereign Engine — all routes
+	reverse_proxy @subnet localhost:8000 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		transport http {
+			read_timeout 120s
+		}
+	}
+
+	# Block direct Ollama access
+	respond /api/* "Direct Ollama access blocked. Use /loci/ollama/generate" 403
+
+	# Health check
+	respond /health `{"status":"ok","node":"workstation","proxy":"caddy"}` 200 {
+		header Content-Type application/json
+	}
+
+	# Reject non-subnet
+	respond "Access denied" 403
+}

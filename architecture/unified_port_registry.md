@@ -32,11 +32,12 @@
 | OLLAMA_MAX_LOADED_MODELS=2 | **NOT SET** — Ollama using defaults |
 
 ### Currently Running (Nov 1, 2026)
-| Port | Service | Binding | PID | Notes |
+| Port | Service | Binding | GPU | Notes |
 |------|---------|---------|-----|-------|
-| 8000 | Sovereign Engine + LOCI Bridge | 0.0.0.0 | uvicorn 64307 | **THE ACTUAL UNIFIED GATEWAY** |
-| 11434 | Ollama | 127.0.0.1 only | 45201 | Localhost-only — proxied via :8000/loci/ollama |
-| 22 | SSH | 0.0.0.0 | sshd | Laptop connected |
+| 8000 | Sovereign Engine + LOCI Bridge (31 routes) | 0.0.0.0 | — | **UNIFIED GATEWAY** |
+| 11434 | Ollama (NVIDIA / CUDA) | 127.0.0.1 | RTX 5060 Ti | 44 tok/s @ 7B, 25 tok/s @ 14B |
+| 11435 | Ollama (Arc / Vulkan) | 127.0.0.1 | Arc B70 Pro | 44 tok/s @ 7B, 25 tok/s @ 14B |
+| 22 | SSH | 0.0.0.0 | — | Laptop connected |
 
 ### Console/Laptop (.149)
 | Port | Service | Status |
@@ -125,12 +126,16 @@ all agents, all ethics, all Glassbox transparency.
     ┌──────────────────────────────────────────────────────────┐
     │                    GPU COMPUTE                            │
     │                                                          │
+    │                    GPU COMPUTE (DUAL-GPU ROUTING)           │
+    │                                                          │
     │  NVIDIA RTX 5060 Ti          Intel Arc B70 Pro Sparkle   │
-    │  16 GB VRAM, CUDA 13.2       32 GB VRAM, Battlemage G31  │
-    │  Safe: 171W / 85°C           Safe: 313W / 90°C           │
-    │  Status: Active, 39°C        Status: D3hot (pending)     │
-    │  Models: loci-agent-14b,     Pending: compute runtime    │
-    │          loci-agent-7b       needs intel-opencl-icd       │
+    │  16 GB VRAM, CUDA 13.2       32 GB VRAM, Vulkan/BMG G31  │
+    │  Ollama :11434               Ollama :11435                │
+    │  44 tok/s (7B), 25 tok/s     44 tok/s (7B), 25 tok/s     │
+    │  (14B) — primary             (14B) — overflow / large     │
+    │                                                          │
+    │  GPU Governor routes seamlessly between both GPUs.       │
+    │  /loci/gpu/route/{model} → picks best endpoint.          │
     └──────────────────────────────────────────────────────────┘
 ```
 

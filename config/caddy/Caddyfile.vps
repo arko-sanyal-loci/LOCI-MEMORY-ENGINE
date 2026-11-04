@@ -1,0 +1,40 @@
+# Billo.tech VPS — Caddy Reverse Proxy (alternative to nginx)
+# Per BIILOTECH spec: both nginx and caddy supported
+#
+# Deploy on VPS:
+#   sudo cp this_file /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Requires SSH tunnel: ssh -N -L 8000:127.0.0.1:8000 arko-sanyal@192.168.10.181
+
+{
+	admin off
+}
+
+billo.tech, www.billo.tech {
+	# Rate limit
+	rate_limit {
+		zone api {
+			key {remote_host}
+			events 30
+			window 1m
+		}
+	}
+
+	# Public landing / dashboard
+	reverse_proxy localhost:8000 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		transport http {
+			read_timeout 120s
+		}
+	}
+
+	# Block write endpoints externally
+	respond /heat/api/v1/verify-action `{"error":"Write operations restricted to subnet"}` 403
+
+	# Health
+	respond /health `{"status":"ok","node":"vps","host":"billo.tech","proxy":"caddy"}` 200 {
+		header Content-Type application/json
+	}
+}
