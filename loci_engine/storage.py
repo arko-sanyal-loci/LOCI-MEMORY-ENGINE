@@ -162,7 +162,7 @@ class StorageEngine:
                 SELECT m.* FROM memory_item m
                 JOIN memory_item_fts f ON m.id = f.item_id
                 WHERE memory_item_fts MATCH ? AND m.status = 'active'
-                ORDER BY m.heat DESC LIMIT ?
+                ORDER BY bm25(memory_item_fts) ASC, m.heat DESC LIMIT ?
             """, (query, limit))
             rows = cur.fetchall()
             return [dict(r) for r in rows]

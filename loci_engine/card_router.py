@@ -115,6 +115,8 @@ class CardRouter:
             # Standard heat-descending or gradient conduction
             selected = sorted(processed_pool, key=lambda x: x["effective_heat"], reverse=True)[:depth_k]
 
+        selected = [item for item in selected if item["effective_heat"] >= cfg["min_confidence"]]
+
         return {
             "query": query,
             "archetype": archetype,

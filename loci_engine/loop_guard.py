@@ -11,6 +11,7 @@ from typing import List, Dict, Any
 
 class LoopGuardCircuitBreaker:
     DEFAULT_THRESHOLD_N = 3
+    MAX_HISTORY = 1000
 
     def __init__(self, threshold: int = DEFAULT_THRESHOLD_N):
         self.threshold = threshold
@@ -24,6 +25,8 @@ class LoopGuardCircuitBreaker:
     def record_and_evaluate(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
         state_hash = self.compute_state_hash(action, params)
         self.state_history.append(state_hash)
+        if len(self.state_history) > self.MAX_HISTORY:
+            self.state_history = self.state_history[-self.MAX_HISTORY:]
 
         # Count consecutive identical state hashes at the tail
         consecutive_count = 0

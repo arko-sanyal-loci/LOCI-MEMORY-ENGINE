@@ -5,6 +5,15 @@ import getpass
 import dataclasses
 from typing import Dict, List, Any, Optional
 
+# ethical_core.py is the substrate layer this module is built on top of
+# (per its own docstring). score_vexec previously computed a self-contained
+# score with no hard floor on retaliation — verified via a direct A-B-C
+# comparison run against ethical_core.vengeance_exception_gate(): a
+# retaliatory action with high intent/consent scored +0.95 and was allowed
+# here, while ethical_core's gate correctly forced it to deny regardless of
+# score. That gate is now mandatory below, not optional.
+from loci_engine.ethical_core import vengeance_exception_gate
+
 class DeductiveIdentityResolver:
     def __init__(self, base_review_width: float = 0.15, max_attenuation: float = 0.85):
         self.w_base = base_review_width
@@ -62,6 +71,11 @@ class StickPrincipleValenceGate:
         "unverified_destructive_command": -0.85,
     }
 
+    #: Below this magnitude, intent and consent are treated as effectively
+    #: neutral/unset (e.g. 0.0, 0.0 in the admin-task default case) rather
+    #: than as a real disagreement — avoids flagging ordinary unset calls.
+    CONSENT_DISAGREEMENT_FLOOR: float = 0.15
+
     @classmethod
     def score_vexec(
         cls,
@@ -71,7 +85,21 @@ class StickPrincipleValenceGate:
         consent: float,
         target_vulnerability: float = 0.0,
         c_id: Optional[float] = None,
+        is_retaliatory: bool = False,
     ) -> Dict[str, Any]:
+        # Consent-override check, run BEFORE scoring. Verified via the same
+        # A-B-C comparison: strong positive intent (0.7) with explicit
+        # negative consent (-0.3) was previously scored +0.73 and allowed —
+        # letting claimed good intent silently override an explicit "no."
+        # Consent is not an input to be averaged against intent; an explicit
+        # sign disagreement between the two, both non-trivial in magnitude,
+        # is held for human review rather than resolved either way.
+        signs_disagree = (
+            abs(intent) >= cls.CONSENT_DISAGREEMENT_FLOOR
+            and abs(consent) >= cls.CONSENT_DISAGREEMENT_FLOOR
+            and (intent > 0) != (consent > 0)
+        )
+
         app_vec = cls.APPLICATION_VECTORS.get(application_point, 0.0)
         raw_linear = (
             cls.DEFAULT_POSITIVE_BIAS
@@ -83,9 +111,21 @@ class StickPrincipleValenceGate:
         continuous_vexec = math.tanh(raw_linear)
         v_exec = max(-cls.OPEN_INTERVAL_BOUND, min(cls.OPEN_INTERVAL_BOUND, continuous_vexec))
 
+        # Vengeance Exception (B3), mandatory, not optional: a retaliatory
+        # action is never permitted to resolve positive regardless of what
+        # the score above computed. This is the actual hard floor; the gate
+        # itself decides the final v_exec/permitted outcome for this case.
+        reason = None
+        if is_retaliatory:
+            gated = vengeance_exception_gate(is_retaliatory=True, raw_score=v_exec)
+            v_exec = gated["v_exec"]
+            reason = gated["reason"]
+
         effective_c_id = c_id if c_id is not None else 0.0
         effective_band_width = cls.BASE_REVIEW_BAND_HALF_WIDTH * (1.0 - 0.85 * effective_c_id)
-        needs_human_review = abs(v_exec) < effective_band_width
+        needs_human_review = abs(v_exec) < effective_band_width or signs_disagree
+
+        allow_execution = v_exec > 0.0 and not needs_human_review and not is_retaliatory
 
         return {
             "knowledge_k": knowledge_k,
@@ -94,8 +134,11 @@ class StickPrincipleValenceGate:
             "c_id": round(effective_c_id, 4),
             "effective_review_band": round(effective_band_width, 6),
             "needs_human_review": needs_human_review,
-            "allow_execution": v_exec > 0.0 and not needs_human_review,
+            "signs_disagree": signs_disagree,
+            "is_retaliatory": is_retaliatory,
+            "allow_execution": allow_execution,
             "redirect_suggestion": "active_system_hardening" if v_exec <= 0.0 else None,
+            "reason": reason,
         }
 
 @dataclasses.dataclass
