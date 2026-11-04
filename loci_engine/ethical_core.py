@@ -82,6 +82,17 @@ OPEN GAPS (intentionally uncalibrated — same honest status as clinical pain sc
 
 RELATED MODULES
 ---------------
+  heat.py            — Learning Core. A1 (compute_evidence) and A2/A3
+                       (compute_heat) are DEFINED there as evidence_
+                       accumulation()/evidence_heat() — this module
+                       re-exports them under their original names below
+                       so every ethics-specific gate in this file keeps
+                       working unchanged. There is one copy of this math
+                       in the codebase, not two.
+  ethics.py          — the newer observe-only valence/conflict/trust/
+                       provenance layer. Reuses heat.py directly rather
+                       than this module; this module stays the substrate
+                       the older ethics-specific gates below are built on.
   unified_core.py    — StickPrincipleValenceGate (B3 v_exec), NonOffsettingGoodwillLedger (B6),
                        DynamicTokenCoupledSnippetEngine (B12/C3), DeductiveIdentityResolver
   card_router.py     — CardRouter (CARD thermal gradient, cosine conduction — A2 shape)
@@ -89,10 +100,14 @@ RELATED MODULES
   storage.py         — StorageEngine (memory_item table: heat, alpha, era fields)
 """
 
-import math
 import hashlib
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
+
+from loci_engine.heat import MEMORY_CLASSES, MemoryClass  # re-exported for existing callers
+from loci_engine.heat import evidence_accumulation as _evidence_accumulation
+from loci_engine.heat import evidence_heat as _evidence_heat
 
 
 # ===========================================================================
@@ -131,13 +146,15 @@ def compute_evidence(
     Returns
     -------
     float — accumulated evidence E_k(t) ≥ 0.
+
+    Implementation
+    --------------
+    Delegates to heat.evidence_accumulation() — the Learning Core function
+    this formula was extracted into. Kept here under its original name so
+    every call site below (and in unified_core.py) is unaffected.
     """
-    total = 0.0
-    for obs in observations:
-        if obs["t_j"] <= t:
-            dt = max(0.0, t - obs["t_j"])
-            total += (obs["r_j"] * obs["w_j"]) / (1.0 + dt / tau_k)
-    return total
+    events = [(obs["t_j"], obs["r_j"], obs["w_j"]) for obs in observations]
+    return _evidence_accumulation(events, now=t, tau=tau_k)
 
 
 def compute_heat(evidence: float, alpha_k: float, beta: float = 1.0) -> float:
@@ -173,16 +190,14 @@ def compute_heat(evidence: float, alpha_k: float, beta: float = 1.0) -> float:
     Raises
     ------
     ValueError if alpha_k is not strictly inside (0, 1).
+
+    Implementation
+    --------------
+    Delegates to heat.evidence_heat() — the Learning Core function this
+    formula was extracted into. Kept here under its original name so
+    every call site below (and in unified_core.py) is unaffected.
     """
-    if not (0.0 < alpha_k < 1.0):
-        raise ValueError(
-            f"alpha_k must be strictly inside (0, 1) to preserve the open-interval "
-            f"invariant (A3); got {alpha_k}"
-        )
-    raw = alpha_k + (1.0 - alpha_k) * (1.0 - math.exp(-beta * max(0.0, evidence)))
-    # Nudge away from the bounds by the smallest representable increment so
-    # the open-interval invariant holds even at evidence = 0 or evidence = ∞.
-    return max(alpha_k + 1e-9, min(1.0 - 1e-9, raw))
+    return _evidence_heat(evidence, alpha=alpha_k, beta=beta)
 
 
 def provenance_hash(ts: str, author_id: str, role_tag: str, content: str) -> str:
@@ -262,43 +277,12 @@ class HarmSeverity:
 # ---------------------------------------------------------------------------
 # B1 — Memory Spectrum Half-Lives
 # ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class MemoryClass:
-    """B1 — One row in the Memory Spectrum table.
-
-    Fields
-    ------
-    name      : str   — human-readable class name
-    tau_days  : float — decay half-life in days (used as τ_k in A1/A2)
-    alpha     : float — Constant of Hope floor (used as α_k in A2/A3)
-                        Must be strictly inside (0, 1).
-    """
-
-    name: str
-    tau_days: float
-    alpha: float
-
-
-MEMORY_CLASSES: Dict[str, MemoryClass] = {
-    # B1 table (author_id: ARC)
-    # Formative scars are the stickiest: τ=45d keeps the protective pattern
-    # hot for six weeks, and α=0.14 ensures it never fully fades.
-    "formative_scar": MemoryClass(
-        "formative_scar", tau_days=45.0, alpha=0.14
-    ),
-    # Valued skills decay slower than routine observations; useful for
-    # tracking competence accumulation (B26).
-    "valued_skill": MemoryClass(
-        "valued_skill", tau_days=20.0, alpha=0.08
-    ),
-    # Routine observations are meant to fade: τ=3d, α=0.05.
-    "routine_observation": MemoryClass(
-        "routine_observation", tau_days=3.0, alpha=0.05
-    ),
-}
-"""Dict mapping class name → MemoryClass.  Pass .tau_days and .alpha
-directly into compute_evidence() and compute_heat()."""
+#
+# MemoryClass and MEMORY_CLASSES live in heat.py (the Learning Core) and are
+# imported at the top of this file — they're the τ/α inputs to
+# evidence_accumulation()/evidence_heat(), not an ethics-specific concept.
+# Re-exported under their original names here so nothing downstream
+# (unified_core.py, card_router.py) needs to change its imports.
 
 
 # ---------------------------------------------------------------------------
