@@ -51,6 +51,14 @@ AGENT_IDENTITIES = {
         ),
         "role": "not yet specialized — see config/loci_rtx_14b.Modelfile, identical role text to loci-agent-14b-qwen3",
     },
+
+    "loci-arc-35b": {
+        "self_chosen_name": "apex",
+        "chosen_on": "2026-11-05",
+        "chosen_reasoning_summary": "Name: Apex
+
+Explanation: As the central node on the Intel Arc B70 Pro Sparkle, I function as the high-capacity focal point that synthesizes broad architectural context and long-range dependencies into coherent, structural insight.",
+    },
 }
 
 
