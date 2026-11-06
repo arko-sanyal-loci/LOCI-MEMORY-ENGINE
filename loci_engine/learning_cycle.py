@@ -17,14 +17,18 @@ to act stays in application_policy.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from loci_engine.application_policy import assess_application
+from loci_engine.audit_trace import AuditTrace
 from loci_engine.card_router import CardRouter
-from loci_engine.learning_store import LearningStore
+from loci_engine.learning_store import HEAT_SCALE, LearningStore
 from loci_engine.numeric_dream import stream_evaluate
+from loci_engine.symprev_review import measure_context, review_context
 
 
 class MissingResearchAdapter:
@@ -58,6 +62,10 @@ class TaskRequest:
     is_retaliatory: bool = False
     numeric_dream_count: int = 0
     numeric_score: Optional[Callable[[int], float]] = None
+
+
+def _digest_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def choose_option(
@@ -98,10 +106,26 @@ def choose_option(
 
 
 class LearningCycle:
-    def __init__(self, db_path: str, research: Any = None, now_day: float = 0.0):
+    def __init__(
+        self,
+        db_path: str,
+        research: Any = None,
+        now_day: float = 0.0,
+        trace: Optional[AuditTrace] = None,
+    ):
         self.store = LearningStore(db_path)
         self.research = research if research is not None else MissingResearchAdapter()
         self.now_day = float(now_day)
+        self.trace = trace
+
+    @contextmanager
+    def _span(self, name: str, inputs: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+        if self.trace is None:
+            holder: Dict[str, Any] = {"output": None, "status": "completed"}
+            yield holder
+            return
+        with self.trace.step(name, inputs) as holder:
+            yield holder
 
     def run(self, task: TaskRequest) -> Dict[str, Any]:
         stages: List[Dict[str, Any]] = []
@@ -115,20 +139,42 @@ class LearningCycle:
             }
         )
 
-        lessons = self.store.active_lessons(task.task_key, self.now_day)
-        card = CardRouter.execute_card_retrieval(
-            task.query,
-            [
-                {
-                    "id": row["id"],
-                    "entity_id": f"{row['task_key']}:{row['option_key']}",
-                    "heat": row["heat"],
-                    "timestamp": row["support_count"],
-                    "statement": row["statement"],
-                }
-                for row in lessons
-            ],
-        )
+        with self._span("retrieval", {"task_key": task.task_key}) as span:
+            lessons = self.store.active_lessons(task.task_key, self.now_day)
+            lexical_probe = self.store.lexical_hits(task.query, limit=5)
+            span["output"] = {
+                "lesson_ids": [row["id"] for row in lessons],
+                "lexical_ids": [hit["id"] for hit in lexical_probe.get("hits", [])],
+            }
+        with self._span("heat_scoring", {"lesson_count": len(lessons)}) as span:
+            span["output"] = {
+                "heats": [row["heat"] for row in lessons],
+                "scale": HEAT_SCALE["memory_class"],
+                "universal_cutoff": HEAT_SCALE["universal_cutoff"],
+            }
+        if self.trace is not None:
+            self.trace.skip("paper_indexing", "no paper corpus attached to this run")
+        card_items = [
+            {
+                "id": row["id"],
+                "entity_id": f"{row['task_key']}:{row['option_key']}",
+                "heat": row["heat"],
+                "timestamp": row["support_count"],
+                "statement": row["statement"],
+                "source_id": row["id"],
+                "support": True,
+                "contradictory": False,
+            }
+            for row in lessons
+        ]
+        with self._span("category_selection", {"query_sha256": _digest_text(task.query)}) as span:
+            card = CardRouter.execute_card_retrieval(task.query, card_items)
+            span["output"] = {
+                "archetype": card["archetype"],
+                "depth_k": card["depth_k"],
+                "token_budget": card["token_budget"],
+                "selected_ids": [item["id"] for item in card["selected_items"]],
+            }
         lexical = self.store.lexical_hits(task.query, limit=card["depth_k"])
         plan = {
             "options": list(task.options),
@@ -166,7 +212,15 @@ class LearningCycle:
             }
         )
 
-        research_output = self._research(task.query)
+        with self._span("research", {"adapter": type(self.research).__name__}) as span:
+            research_output = self._research(task.query)
+            span["status"] = research_output["status"] if research_output["status"] != "completed" else "completed"
+            if research_output["status"] != "completed":
+                span["status"] = research_output["status"]
+            span["output"] = {
+                "status": research_output["status"],
+                "hit_count": len(research_output.get("hits") or []),
+            }
         stages.append(
             {
                 "stage": "research",
@@ -194,56 +248,72 @@ class LearningCycle:
         )
 
         product = None
-        if not policy["allow_execution"]:
-            if policy["knowledge_may_be_retained"]:
-                self.store.remember_candidate(
-                    task_key=task.task_key,
-                    option_key="*",
-                    statement=(
-                        f"Action {task.action_name} was not executed. "
-                        f"Constraints: {', '.join(policy['hard_constraints']) or 'gate review'}."
-                    ),
-                    score=0.0,
-                    source="reflection",
-                )
-            stages.append(
-                {
-                    "stage": "execute",
-                    "status": "denied",
-                    "detail": "no product was produced",
-                    "output": {"product": None},
-                }
-            )
-        else:
-            decision = choose_option(task.options, task.dream_scores, lessons)
-            if decision["choice"] is None:
+        with self._span("execution", {"action": task.action_name}) as span:
+            if not policy["allow_execution"]:
+                if policy["knowledge_may_be_retained"]:
+                    self.store.remember_candidate(
+                        task_key=task.task_key,
+                        option_key="*",
+                        statement=(
+                            f"Action {task.action_name} was not executed. "
+                            f"Constraints: {', '.join(policy['hard_constraints']) or 'gate review'}."
+                        ),
+                        score=0.0,
+                        source="reflection",
+                    )
                 stages.append(
                     {
                         "stage": "execute",
-                        "status": "completed",
-                        "detail": decision["reason"],
-                        "output": decision,
+                        "status": "denied",
+                        "detail": "no product was produced",
+                        "output": {"product": None},
                     }
                 )
+                span["status"] = "denied"
+                span["output"] = {"choice": None, "allow_execution": False}
             else:
-                product = {
-                    "task_key": task.task_key,
-                    "choice": decision["choice"],
-                    "reason": decision["reason"],
-                    "avoided": decision["avoided"],
-                    "label": "offline_product",
-                    "research_hits_used": 0,
-                }
-                stages.append(
-                    {
-                        "stage": "execute",
-                        "status": "completed",
-                        "detail": decision["reason"],
-                        "output": {**decision, "product": product},
+                decision = choose_option(task.options, task.dream_scores, lessons)
+                if decision["choice"] is None:
+                    stages.append(
+                        {
+                            "stage": "execute",
+                            "status": "completed",
+                            "detail": decision["reason"],
+                            "output": decision,
+                        }
+                    )
+                    span["output"] = {"choice": None, "allow_execution": True}
+                else:
+                    product = {
+                        "task_key": task.task_key,
+                        "choice": decision["choice"],
+                        "reason": decision["reason"],
+                        "avoided": decision["avoided"],
+                        "label": "offline_product",
+                        "research_hits_used": 0,
                     }
-                )
+                    stages.append(
+                        {
+                            "stage": "execute",
+                            "status": "completed",
+                            "detail": decision["reason"],
+                            "output": {**decision, "product": product},
+                        }
+                    )
+                    span["output"] = {
+                        "choice": product["choice"],
+                        "reason": product["reason"],
+                        "allow_execution": True,
+                    }
 
-        dream = self._dream(task)
+        with self._span("dream_batch", {"numeric_n": task.numeric_dream_count}) as span:
+            dream = self._dream(task)
+            span["output"] = {
+                "evaluated": dream["numeric"]["evaluated"],
+                "retained": dream["numeric"]["retained"],
+                "label": dream["numeric"].get("label"),
+                "candidate_ids": [row["id"] for row in dream["discrete_candidates"]],
+            }
         for winner in dream["discrete_candidates"]:
             self.store.remember_candidate(
                 task_key=task.task_key,
@@ -257,35 +327,102 @@ class LearningCycle:
             )
         stages.append({"stage": "dream", "status": "completed", "detail": dream["label"], "output": dream})
 
-        reflection = self._reflect(task, product, dream)
-        self.store.remember_candidate(
-            task_key=task.task_key,
-            option_key=str((product or {}).get("choice") or "*"),
-            statement=reflection["statement"],
-            score=0.0,
-            source="reflection",
-        )
-        stages.append(
-            {"stage": "reflect", "status": "completed", "detail": reflection["statement"], "output": reflection}
-        )
-
-        stages.append(
-            {
-                "stage": "remember",
-                "status": "completed",
-                "detail": (
-                    "Dream output stayed quarantined. Crystallized memory changes "
-                    "only in record_observed_outcome."
-                ),
-                "output": {"crystallized": []},
+        exact_facts = []
+        for row in lessons:
+            evidence = row.get("evidence") or {}
+            if evidence.get("quantity") is None:
+                continue
+            exact_facts.append(
+                {
+                    "source_id": row["id"],
+                    "option_key": row["option_key"],
+                    "quantity": evidence["quantity"],
+                    "unit": evidence.get("unit", "loss"),
+                    "polarity": row["polarity"],
+                    "task_key": row["task_key"],
+                }
+            )
+        full_text = "\n".join([task.objective, *[row["statement"] for row in lessons]])
+        with self._span("review_compression", {"exact_fact_count": len(exact_facts)}) as span:
+            symprev = review_context(
+                query=task.query,
+                items=card_items,
+                exact_facts=exact_facts,
+                policy={
+                    "allow_execution": policy["allow_execution"],
+                    "hard_constraints": policy["hard_constraints"],
+                    "v_exec": policy["v_exec"],
+                },
+            )
+            savings = measure_context(full_text, symprev)
+            span["output"] = {
+                "status": symprev["status"],
+                "symbol_count": len(symprev["symbols"]),
+                "exact_facts_truncated": symprev["exact_facts_truncated"],
+                "selected_tokens": savings["selected"]["tokens"],
+                "baseline_tokens": savings["baseline"]["tokens"],
+                "called_golden": symprev["called_golden"],
             }
-        )
+        with self._span("reflection_persistence", {"task_key": task.task_key}) as span:
+            reflection = self._reflect(task, product, dream)
+            self.store.remember_candidate(
+                task_key=task.task_key,
+                option_key=str((product or {}).get("choice") or "*"),
+                statement=reflection["statement"],
+                score=0.0,
+                source="reflection",
+            )
+            stages.append(
+                {"stage": "reflect", "status": "completed", "detail": reflection["statement"], "output": reflection}
+            )
+            stages.append(
+                {
+                    "stage": "remember",
+                    "status": "completed",
+                    "detail": (
+                        "Dream output stayed quarantined. Crystallized memory changes "
+                        "only in record_observed_outcome."
+                    ),
+                    "output": {"crystallized": []},
+                }
+            )
+            span["output"] = {"crystallized": 0, "reflection_sha256": _digest_text(reflection["statement"])}
+        trace_summary = None
+        if self.trace is not None:
+            steps = [row for row in self.trace.records() if row.get("kind") == "step"]
+            trace_summary = {
+                "path": str(self.trace.path),
+                "run_id": self.trace.run_id,
+                "code_version": self.trace.code_version,
+                "limitation": steps and self.trace.records()[0].get("limitation"),
+                "proves_wall_clock": False,
+                "steps": [
+                    {
+                        "name": row["name"],
+                        "status": row["status"],
+                        "wall_start": row["wall_start"],
+                        "wall_end": row["wall_end"],
+                        "monotonic_duration_seconds": row["monotonic_duration_seconds"],
+                    }
+                    for row in steps
+                ],
+            }
         return {
             "task_key": task.task_key,
             "stages": stages,
             "product": product,
             "policy": policy,
             "recall": plan,
+            "symprev": {
+                "status": symprev["status"],
+                "archetype": symprev["archetype"],
+                "token_budget": symprev["token_budget"],
+                "called_golden": False,
+                "exact_facts_truncated": symprev["exact_facts_truncated"],
+                "policy_allow_execution": symprev["policy"]["allow_execution"],
+                "measurement": savings,
+            },
+            "audit": trace_summary,
         }
 
     def record_observed_outcome(
@@ -322,6 +459,8 @@ class LearningCycle:
                     now_day=self.now_day,
                     scope_request=scope_request,
                     expires_on_day=expires_on_day,
+                    quantity=float(measurements[best]),
+                    unit="loss",
                 )
             )
             written.append(
@@ -338,6 +477,8 @@ class LearningCycle:
                     now_day=self.now_day,
                     scope_request=scope_request,
                     expires_on_day=expires_on_day,
+                    quantity=float(measurements[worst]),
+                    unit="loss",
                 )
             )
         reflection = self.store.remember_candidate(
@@ -447,7 +588,26 @@ class LearningCycle:
         return {"statement": text, "simulated_leader": top, "product_choice": choice}
 
 
-def run_offline_demo(db_path: str, *, numeric_dream_count: int = 0) -> Dict[str, Any]:
+def _code_version() -> str:
+    import subprocess
+    from pathlib import Path
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def run_offline_demo(
+    db_path: str,
+    *,
+    numeric_dream_count: int = 0,
+    trace_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """Controlled offline task. Not a real-world validation.
 
     The dream surrogate prefers w08. The held-out loss prefers w05 and marks
@@ -467,7 +627,14 @@ def run_offline_demo(db_path: str, *, numeric_dream_count: int = 0) -> Dict[str,
         if numeric_dream_count
         else None,
     )
-    first = LearningCycle(db_path)
+    trace = None
+    if trace_path:
+        trace = AuditTrace(
+            trace_path,
+            config={"demo": "mixweight", "heat_scale": HEAT_SCALE, "numeric_n": numeric_dream_count},
+            code_version=_code_version(),
+        )
+    first = LearningCycle(db_path, trace=trace)
     before = first.run(task)
     before_hits = first.store.lexical_hits("mixweight avoid option w08", limit=5)
     outcome = first.record_observed_outcome(
@@ -476,7 +643,7 @@ def run_offline_demo(db_path: str, *, numeric_dream_count: int = 0) -> Dict[str,
         outcome_id="heldout-1",
     )
     after_hits = first.store.lexical_hits("mixweight avoid option w08", limit=5)
-    second = LearningCycle(db_path)
+    second = LearningCycle(db_path, trace=trace)
     after = second.run(task)
     other = second.run(
         TaskRequest(
@@ -515,6 +682,9 @@ def run_offline_demo(db_path: str, *, numeric_dream_count: int = 0) -> Dict[str,
         },
         "numeric": before["stages"][-3]["output"]["numeric"] if numeric_dream_count else None,
         "exponential_learning": False,
+        "symprev_after": after.get("symprev"),
+        "audit": after.get("audit"),
+        "audit_proves_wall_clock": False,
     }
 
 

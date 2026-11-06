@@ -157,6 +157,8 @@ class LearningStore:
         now_day: float,
         scope_request: str = "task",
         expires_on_day: Optional[float] = None,
+        quantity: Optional[float] = None,
+        unit: str = "loss",
     ) -> Dict[str, Any]:
         """Crystallize or reinforce from one external outcome id.
 
@@ -214,6 +216,8 @@ class LearningStore:
                     "scope_request": scope_request,
                     "task_specific": scope != "universal",
                     "heat_scale": HEAT_SCALE,
+                    "quantity": quantity,
+                    "unit": unit,
                 }
             ),
             "source_event_ids": json.dumps(ids),

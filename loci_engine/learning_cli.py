@@ -28,9 +28,14 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="bounded arithmetic candidates to score (0 skips the stream)",
     )
+    demo.add_argument("--trace", help="append-only audit jsonl path")
     args = parser.parse_args(argv)
     if args.command == "demo":
-        payload = run_offline_demo(args.db, numeric_dream_count=max(0, args.numeric_n))
+        payload = run_offline_demo(
+            args.db,
+            numeric_dream_count=max(0, args.numeric_n),
+            trace_path=args.trace,
+        )
         text = json.dumps(payload, indent=2)
         if args.out:
             with open(args.out, "w", encoding="utf-8") as handle:
