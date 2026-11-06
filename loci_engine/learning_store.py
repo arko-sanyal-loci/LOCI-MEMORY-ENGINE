@@ -47,7 +47,23 @@ CREATE INDEX IF NOT EXISTS idx_lesson_task
     ON learning_lesson(task_key, epistemic_status, option_key);
 """
 
+# This cycle's stored heat uses the repository open-interval law on the
+# routine_observation class only. It is not a retrieval cutoff.
+# It is not the ZIP table's 0.725 "sweet spot", not thermal_gradient's 0.70
+# HOT tier, not LDCE's 0.50 kernel line, and not the older paper scale
+# (>1.5 HOT / >0.5 WARM, or TopN in TD Commons 11666). Those scales are
+# not interchangeable. Nothing here treats 0.725 as a universal gate.
 _MEMORY_CLASS = MEMORY_CLASSES["routine_observation"]
+HEAT_SCALE = {
+    "module": "loci_engine.heat",
+    "memory_class": _MEMORY_CLASS.name,
+    "tau_days": _MEMORY_CLASS.tau_days,
+    "alpha": _MEMORY_CLASS.alpha,
+    "beta": 1.0,
+    "formula": "H = alpha + (1-alpha)*(1-exp(-beta*support)) at dt=0",
+    "role": "stored evidence heat, not a recall threshold",
+    "universal_cutoff": None,
+}
 
 
 def _now_iso() -> str:
@@ -63,6 +79,10 @@ def heat_from_support(support_count: int, now_day: float) -> float:
 
     Increments shrink as support grows. The value stays below 1. This is
     saturation, not exponential growth of capability.
+
+    The class is ``HEAT_SCALE`` (routine_observation, alpha 0.05, tau 3 days).
+    Passing a cutoff from another document, including 0.725, into this
+    function would mix incompatible scales.
     """
     support = max(0, int(support_count))
     if support == 0:
@@ -193,6 +213,7 @@ class LearningStore:
                     "outcome_ids": ids,
                     "scope_request": scope_request,
                     "task_specific": scope != "universal",
+                    "heat_scale": HEAT_SCALE,
                 }
             ),
             "source_event_ids": json.dumps(ids),

@@ -7,8 +7,8 @@ import unittest
 
 from loci_engine.application_policy import assess_application
 from loci_engine.card_router import CardRouter
-from loci_engine.learning_cycle import LearningCycle, TaskRequest, run_offline_demo
-from loci_engine.learning_store import LearningStore, heat_from_support
+from loci_engine.learning_cycle import LearningCycle, TaskRequest, choose_option, run_offline_demo
+from loci_engine.learning_store import HEAT_SCALE, LearningStore, heat_from_support
 from loci_engine.link_rank import rank_items
 from loci_engine.numeric_dream import stream_evaluate
 
@@ -137,6 +137,28 @@ class LearningCycleTests(unittest.TestCase):
         self.assertTrue(all(deltas[i] > deltas[i + 1] for i in range(len(deltas) - 1)))
         self.assertLess(heats[-1], 1.0)
         self.assertAlmostEqual(heats[-1], heat_from_support(5, 0.0))
+        self.assertEqual(HEAT_SCALE["memory_class"], "routine_observation")
+        self.assertEqual(HEAT_SCALE["alpha"], 0.05)
+        self.assertEqual(HEAT_SCALE["tau_days"], 3.0)
+        self.assertIsNone(HEAT_SCALE["universal_cutoff"])
+        self.assertLess(heats[0], 0.725)
+        stored = store.get_lesson(row["id"])["evidence"]["heat_scale"]
+        self.assertEqual(stored["memory_class"], "routine_observation")
+        # A lesson below 0.725 still counts. That number is not a gate here.
+        decision = choose_option(
+            ["w02", "w05"],
+            {"w02": 0.9, "w05": 0.1},
+            [{
+                "id": row["id"],
+                "option_key": "w05",
+                "polarity": "positive",
+                "support_count": 1,
+                "heat": heats[0],
+                "confidence": heats[0],
+            }],
+        )
+        self.assertEqual(decision["choice"], "w05")
+        self.assertEqual(decision["reason"], "crystallized_positive")
 
     def test_contradiction_supersedes_and_expiry_drops(self):
         store = LearningStore(self.db)
