@@ -168,6 +168,8 @@ class SymprevTests(unittest.TestCase):
         self.assertEqual(packet["exact_facts"], facts)
         self.assertEqual(packet["policy"]["allow_execution"], False)
         self.assertEqual(packet["status"], "budget_exceeded_exact_facts_retained")
+        self.assertFalse(packet["answer_ready"])
+        self.assertFalse(packet["optimized"])
         self.assertEqual(packet["symbols"], [])
         self.assertEqual(packet["token_estimate_method"], "utf8_bytes_div_4")
         again = reexpand(packet, "blob", {"blob": prose})
@@ -195,7 +197,11 @@ class SymprevTests(unittest.TestCase):
             policy={"allow_execution": True, "hard_constraints": [], "v_exec": 0.4},
         )
         self.assertEqual(packet["token_budget"], 180)
+        self.assertLessEqual(packet["packet_tokens"], packet["token_budget"])
+        self.assertTrue(packet["answer_ready"])
+        self.assertFalse(packet["refs_only"])
         self.assertEqual([row["id"] for row in packet["symbols"]], ["a"])
+        self.assertIn("excerpt", packet["symbols"][0])
         reasons = {row["id"]: row["reason"] for row in packet["dropped"]}
         self.assertEqual(reasons["b"], "redundant")
         self.assertEqual(reasons["c"], "contradictory")
@@ -205,6 +211,12 @@ class SymprevTests(unittest.TestCase):
         self.assertIsNone(measured["money_saved"])
         self.assertFalse(measured["quality_guaranteed"])
         self.assertLess(measured["selected"]["tokens"], measured["baseline"]["tokens"])
+        self.assertTrue(measured["answer_ready"])
+        self.assertGreater(measured["total_tokens"], measured["baseline"]["tokens"])
+        self.assertTrue(measured["grew"])
+        self.assertFalse(measured["optimized"])
+        self.assertIsNone(measured["money_saved"])
+        self.assertTrue(measured["byte_estimate_only"])
         self.assertGreater(measured["review_overhead"]["tokens"], 0)
         self.assertEqual(estimate_tokens("abcd")["method"], "utf8_bytes_div_4")
 

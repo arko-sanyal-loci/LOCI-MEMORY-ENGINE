@@ -256,6 +256,39 @@ class LearningStore:
         self._mirror_memory(row, item_type=item_type)
         return row["id"]
 
+    def list_crystallized(self, now_day: float) -> List[Dict[str, Any]]:
+        """Every current crystallized lesson in this file, owner scope is the file."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM learning_lesson WHERE epistemic_status = 'crystallized'"
+            ).fetchall()
+        kept = []
+        for row in rows:
+            item = self._pack(row)
+            expires = item["expires_on_day"]
+            if expires is not None and float(now_day) >= float(expires):
+                self._mark(item["id"], "expired")
+                continue
+            if item["provenance_kind"] != "observed_external":
+                continue
+            kept.append(item)
+        return kept
+
+    def list_goals(self) -> List[Dict[str, Any]]:
+        with self.engine._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, canonical_text, heat, created_at
+                FROM memory_item
+                WHERE status = 'active' AND item_type = 'goal_context'
+                  AND namespace = 'learning_loop'
+                """
+            ).fetchall()
+        return [
+            {"id": row[0], "statement": row[1], "heat": row[2], "created_at": row[3]}
+            for row in rows
+        ]
+
     def active_lessons(self, task_key: str, now_day: float) -> List[Dict[str, Any]]:
         """Crystallized lessons for this task, plus universal crystallized lessons.
 

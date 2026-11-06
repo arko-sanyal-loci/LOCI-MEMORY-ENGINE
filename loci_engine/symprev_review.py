@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from loci_engine.card_router import CardRouter
+from loci_engine.unified_core import DynamicTokenCoupledSnippetEngine
 
 
 # Source-qualified names. Do not collapse rows that share a letter.
@@ -132,6 +134,26 @@ def lookup_qsymprev(facts: List[Dict[str, Any]], key: str, now: Optional[float] 
     }
 
 
+def _window(text: str, query: str, max_bytes: int) -> Optional[str]:
+    """A source window, not a paraphrase. None when even a short window cannot fit."""
+    if max_bytes < 16:
+        return None
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    lower = text.lower()
+    byte_at = 0
+    for token in re.findall(r"[a-z0-9]{3,}", query.lower()):
+        at = lower.find(token)
+        if at >= 0:
+            byte_at = len(text[:at].encode("utf-8"))
+            break
+    start = max(0, byte_at - max_bytes // 5)
+    chunk = raw[start:start + max_bytes]
+    excerpt = chunk.decode("utf-8", errors="ignore").strip()
+    return excerpt or None
+
+
 def review_context(
     *,
     query: str,
@@ -173,6 +195,7 @@ def review_context(
                 "heat": item.get("heat"),
                 "content_sha256": content_sha,
                 "token_estimate": estimate_tokens(text)["tokens"],
+                "_text": text,
             }
         )
 
@@ -180,36 +203,69 @@ def review_context(
     injected_facts = qbus["current"]
     for row in qbus["withheld"]:
         dropped.append(row)
-    exact_render = json.dumps(injected_facts, sort_keys=True)
-    exact_tokens = estimate_tokens(exact_render)["tokens"]
+    # The category budget counts the whole answer packet, including ids and
+    # the exact-fact JSON. A later wrapper must not be allowed to report a
+    # larger "selected" count than this budget.
+    skeleton = {"isymprev": [], "qsymprev": injected_facts}
+    exact_tokens = estimate_tokens(json.dumps(injected_facts, sort_keys=True))["tokens"]
+    wrapper_tokens = estimate_tokens(json.dumps(skeleton, sort_keys=True))["tokens"] - exact_tokens
     kept: List[Dict[str, Any]] = []
-    used = exact_tokens
-    reexpand_required = []
-    for symbol in symbols:
-        cost = int(symbol["token_estimate"])
-        if used + cost > budget:
-            reexpand_required.append(symbol["source_id"])
-            dropped.append({"id": symbol["id"], "reason": "over_category_budget"})
-            continue
-        kept.append(symbol)
-        used += cost
-    status = "ok"
+    reexpand_required: List[str] = []
     if exact_tokens > budget:
-        kept = []
-        reexpand_required = [symbol["source_id"] for symbol in symbols]
         status = "budget_exceeded_exact_facts_retained"
-        used = exact_tokens
-    elif reexpand_required:
-        status = "partial_symbols_exact_facts_retained"
-
-    rendered = json.dumps({"isymprev": kept, "qsymprev": injected_facts}, sort_keys=True)
+        answer_ready = False
+        rendered_obj = skeleton
+    else:
+        used = estimate_tokens(json.dumps(skeleton, sort_keys=True))["tokens"]
+        for symbol in symbols:
+            source_text = symbol.pop("_text")
+            remaining_tokens = budget - used
+            snippet = DynamicTokenCoupledSnippetEngine.resolve_snippet_budget(
+                float(symbol.get("heat") or 0.5),
+                0.0,
+                tokens_already_consumed=min(used, DynamicTokenCoupledSnippetEngine.MILLER_TOKEN_CEILING),
+            )
+            max_bytes = min(int(snippet["allocated_bytes"]), max(0, remaining_tokens) * 4)
+            excerpt = _window(source_text, query, max_bytes)
+            if excerpt is None:
+                reexpand_required.append(symbol["source_id"])
+                dropped.append({"id": symbol["id"], "reason": "reexpansion_required"})
+                continue
+            candidate = dict(symbol)
+            candidate["excerpt"] = excerpt
+            candidate["excerpt_is_full_source"] = excerpt == source_text
+            candidate["token_estimate"] = estimate_tokens(excerpt)["tokens"]
+            trial = {"isymprev": kept + [candidate], "qsymprev": injected_facts}
+            trial_tokens = estimate_tokens(json.dumps(trial, sort_keys=True))["tokens"]
+            if trial_tokens > budget:
+                reexpand_required.append(symbol["source_id"])
+                dropped.append({"id": symbol["id"], "reason": "reexpansion_required"})
+                continue
+            kept.append(candidate)
+            used = trial_tokens
+        rendered_obj = {"isymprev": kept, "qsymprev": injected_facts}
+        if kept:
+            status = "ok" if not reexpand_required else "partial_excerpt_exact_facts_retained"
+            answer_ready = True
+        elif reexpand_required or symbols:
+            status = "reexpansion_required"
+            answer_ready = False
+        else:
+            status = "ok"
+            answer_ready = bool(injected_facts) or not symbols
+    rendered = json.dumps(rendered_obj, sort_keys=True)
+    packet_tokens = estimate_tokens(rendered)["tokens"]
+    excerpt_tokens = sum(estimate_tokens(row.get("excerpt") or "")["tokens"] for row in kept)
+    refs_only = (not kept) and (not injected_facts) and (not answer_ready)
     return {
         "interface": "SYMPREV",
         "called_golden": False,
+        "optimized": False,
         "semantic_validation": False,
         "neural_embeddings": False,
         "theta_hot_0_725_applied": False,
         "token_estimate_method": TOKEN_ESTIMATE_METHOD,
+        "snippet_engine": "DynamicTokenCoupledSnippetEngine",
         "archetype": card["archetype"],
         "depth_k": card["depth_k"],
         "token_budget": budget,
@@ -222,8 +278,16 @@ def review_context(
         "dropped": dropped,
         "reexpand_source_ids": reexpand_required,
         "status": status,
+        "answer_ready": answer_ready,
+        "refs_only": refs_only,
         "policy": policy,
+        "packet_tokens": packet_tokens,
+        "exact_fact_tokens": exact_tokens,
+        "wrapper_tokens": max(0, wrapper_tokens),
+        "excerpt_tokens": excerpt_tokens,
+        "reexpansion_tokens": excerpt_tokens,
         "selected_token_estimate": estimate_tokens(rendered),
+        "budget_respected_when_facts_fit": exact_tokens > budget or packet_tokens <= budget,
         "streams": STREAMS,
         "aliases": ALIASES,
     }
@@ -261,14 +325,33 @@ def measure_context(full_text: str, packet: Dict[str, Any]) -> Dict[str, Any]:
         "archetype": packet["archetype"],
     }))
     base_tokens = baseline["tokens"] or 1
+    total = selected["tokens"] + review_overhead["tokens"]
+    answer_ready = bool(packet.get("answer_ready"))
+    grew = total > base_tokens
+    # A smaller byte count is not a saving when the packet is not an answer,
+    # and a wrapper that grows a short source is not an optimization.
+    optimized = answer_ready and not packet.get("refs_only") and total < base_tokens
     return {
         "baseline": baseline,
         "selected": selected,
+        "packet_tokens": packet.get("packet_tokens"),
+        "wrapper_tokens": packet.get("wrapper_tokens"),
+        "exact_fact_tokens": packet.get("exact_fact_tokens"),
+        "excerpt_tokens": packet.get("excerpt_tokens"),
+        "reexpansion_tokens": packet.get("reexpansion_tokens"),
         "review_overhead": review_overhead,
+        "total_tokens": total,
         "reduction_ratio_selected_over_baseline": selected["tokens"] / base_tokens,
+        "answer_ready": answer_ready,
+        "refs_only": bool(packet.get("refs_only")),
+        "optimized": optimized,
+        "grew": grew,
+        "bypass": grew,
         "model_invoked": False,
         "api_usage": None,
         "money_saved": None,
+        "byte_estimate_only": True,
         "quality_guaranteed": False,
         "exact_facts_truncated": packet["exact_facts_truncated"],
+        "budget_respected_when_facts_fit": packet.get("budget_respected_when_facts_fit"),
     }

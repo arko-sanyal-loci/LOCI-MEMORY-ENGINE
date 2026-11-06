@@ -14,6 +14,7 @@ import json
 import sys
 
 from loci_engine.learning_cycle import run_offline_demo
+from loci_engine.memory_lifecycle import HOST_STATUS, conversation_start, resolve_config
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,7 +30,26 @@ def main(argv: list[str] | None = None) -> int:
         help="bounded arithmetic candidates to score (0 skips the stream)",
     )
     demo.add_argument("--trace", help="append-only audit jsonl path")
+    start = sub.add_parser("conversation-start", help="load one owner's store; host must call this")
+    start.add_argument("--owner", required=True)
+    start.add_argument("--conversation", required=True)
+    start.add_argument("--opening")
+    start.add_argument("--store-dir")
+    start.add_argument("--now-day", type=float, default=0.0)
     args = parser.parse_args(argv)
+    if args.command == "conversation-start":
+        payload = conversation_start(
+            resolve_config(store_dir=args.store_dir),
+            owner_id=args.owner,
+            conversation_id=args.conversation,
+            opening=args.opening,
+            now_day=args.now_day,
+        )
+        payload["host_status"] = HOST_STATUS
+        text = json.dumps(payload, indent=2)
+        sys.stdout.write(text)
+        sys.stdout.write("\n")
+        return 0
     if args.command == "demo":
         payload = run_offline_demo(
             args.db,
