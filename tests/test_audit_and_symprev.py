@@ -10,7 +10,15 @@ from datetime import datetime
 from loci_engine.audit_trace import LIMITATION, AuditTrace, verify_chain
 from loci_engine.card_router import CardRouter
 from loci_engine.learning_cycle import LearningCycle, TaskRequest
-from loci_engine.symprev_review import ALIASES, estimate_tokens, measure_context, reexpand, review_context
+from loci_engine.symprev_review import (
+    ALIASES,
+    STREAMS,
+    estimate_tokens,
+    lookup_qsymprev,
+    measure_context,
+    reexpand,
+    review_context,
+)
 
 
 REQUIRED_STEPS = [
@@ -99,10 +107,40 @@ class AuditTests(unittest.TestCase):
 class SymprevTests(unittest.TestCase):
     def test_alias_map_does_not_invent_simlink(self):
         self.assertIn("SYMPREV", ALIASES)
-        self.assertIn("QSymPrev", ALIASES)
-        self.assertIn("DSymPrev", ALIASES)
-        self.assertIn("SymLinkPrev", ALIASES)
-        self.assertIn("not a module", ALIASES["SimLink"])
+        self.assertIn("no separate titled paper", ALIASES["SimLink"])
+        paper_s = STREAMS["tdcommons:11089.SSympPrev"]["role"]
+        zip_s = STREAMS["zip_package.SSymPrev"]["role"]
+        self.assertEqual(paper_s, "reflection_on_action")
+        self.assertEqual(zip_s, "simulation")
+        self.assertNotEqual(paper_s, zip_s)
+        self.assertEqual(
+            STREAMS["zip_package.SSymPrev"]["not_the_same_as"],
+            "tdcommons:11089.SSympPrev",
+        )
+
+    def test_qsymprev_keeps_current_value_and_does_not_invent(self):
+        facts = [
+            {"id": "v1", "key": "loss", "quantity": 0.9, "unit": "loss", "polarity": "negative", "valid_from": 0, "valid_until": 1},
+            {"id": "v2", "key": "loss", "quantity": 0.55, "unit": "loss", "polarity": "negative", "supersedes": "v1", "valid_from": 1, "valid_until": None, "source_id": "heldout-1"},
+        ]
+        found = lookup_qsymprev(facts, "loss", now=2)
+        self.assertEqual(found["status"], "value")
+        self.assertEqual(found["value"], 0.55)
+        self.assertEqual(found["unit"], "loss")
+        self.assertIsNone(lookup_qsymprev(facts, "price", now=2)["value"])
+        self.assertEqual(lookup_qsymprev(facts, "price", now=2)["status"], "not_found")
+        expired = [{"id": "old", "key": "loss", "quantity": 0.9, "unit": "loss", "valid_until": 1}]
+        self.assertEqual(lookup_qsymprev(expired, "loss", now=2)["status"], "not_found")
+        packet = review_context(
+            query="latest updated loss",
+            items=[],
+            exact_facts=facts,
+            policy={"allow_execution": True, "hard_constraints": [], "v_exec": 0.2},
+            token_budget=180,
+        )
+        self.assertEqual(packet["qsymprev"][0]["quantity"], 0.55)
+        self.assertEqual(packet["qsymprev_withheld"][0]["reason"], "superseded")
+        self.assertFalse(packet["theta_hot_0_725_applied"])
 
     def test_exact_fact_survives_a_budget_that_cannot_hold_prose(self):
         facts = [{
