@@ -165,6 +165,85 @@ class TestNodeSyncDaemon(unittest.TestCase):
         self.assertEqual(applied, 1)
         self.assertEqual(self.daemon._stats["merges_applied"], 1)
 
+    def test_glassbox_entries_in_delta(self):
+        """poll_and_publish includes new Glassbox entries in the delta."""
+        import loci_engine.glassbox as gb
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            gb.GLASSBOX_PATH = f.name
+        try:
+            with open(gb.GLASSBOX_PATH, "w"):
+                pass
+            gb.glassbox_learn("test_agent", "agent", "Insight for sync test")
+            delta_bytes = self.daemon.poll_and_publish()
+            self.assertIsNotNone(delta_bytes)
+            from loci_engine.node_sync_daemon import SyncDelta
+            decoded = SyncDelta.decode(delta_bytes)
+            self.assertGreaterEqual(decoded["glassbox_count"], 1)
+            self.assertEqual(decoded["glassbox_entries"][0]["content"], "Insight for sync test")
+        finally:
+            os.unlink(gb.GLASSBOX_PATH)
+
+    def test_apply_remote_glassbox_entries(self):
+        """Remote Glassbox entries in a delta are applied to the local ledger."""
+        import loci_engine.glassbox as gb
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            gb.GLASSBOX_PATH = f.name
+        try:
+            with open(gb.GLASSBOX_PATH, "w"):
+                pass
+            # Build a fake entry as if it came from a remote node
+            remote_entry = {
+                "id": "gb_aabbcc112233",
+                "timestamp": "2026-11-15T10:00:00+00:00",
+                "author_id": "remote_node",
+                "role_tag": "agent",
+                "content": "Remote Glassbox learning",
+                "category": "observation",
+                "supersedes_id": None,
+                "prev_hash": gb.GENESIS_HASH,
+                "entry_hash": "aabbcc112233aabbcc112233aabbcc112233aabbcc112233aabbcc112233aabb",
+                "metadata": {},
+            }
+            delta = {
+                "node_id": "remote_node",
+                "version_vector": {"remote_node": 1},
+                "items": [],
+                "glassbox_entries": [remote_entry],
+            }
+            self.daemon._apply_remote_delta(delta)
+            entries = gb._read_ledger()
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0]["content"], "Remote Glassbox learning")
+            self.assertEqual(self.daemon._stats["glassbox_entries_received"], 1)
+        finally:
+            os.unlink(gb.GLASSBOX_PATH)
+
+    def test_anti_entropy_includes_glassbox(self):
+        """get_anti_entropy_state reports glassbox_total and chain_head."""
+        import loci_engine.glassbox as gb
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
+            gb.GLASSBOX_PATH = f.name
+        try:
+            with open(gb.GLASSBOX_PATH, "w"):
+                pass
+            gb.glassbox_learn("arko", "operator", "Anti-entropy test entry")
+            state = self.daemon.get_anti_entropy_state()
+            self.assertIn("glassbox_total", state)
+            self.assertIn("glassbox_chain_head", state)
+            self.assertEqual(state["glassbox_total"], 1)
+            self.assertIsNotNone(state["glassbox_chain_head"])
+        finally:
+            os.unlink(gb.GLASSBOX_PATH)
+
+    def test_sync_delta_encode_includes_glassbox(self):
+        """SyncDelta.encode includes glassbox_entries in the wire format."""
+        from loci_engine.node_sync_daemon import SyncDelta
+        gb_entries = [{"entry_hash": "abc", "content": "test"}]
+        encoded = SyncDelta.encode("node_a", {"node_a": 1}, [], gb_entries)
+        decoded = SyncDelta.decode(encoded)
+        self.assertEqual(decoded["glassbox_count"], 1)
+        self.assertEqual(decoded["glassbox_entries"][0]["content"], "test")
+
 
 if __name__ == "__main__":
     unittest.main()

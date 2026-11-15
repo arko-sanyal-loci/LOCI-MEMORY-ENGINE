@@ -66,6 +66,15 @@ from loci_engine.gpu_governor import (
 storage = StorageEngine()
 loop_guard = LoopGuardCircuitBreaker(threshold=3)
 
+_sync_daemon = None
+
+def _get_sync_daemon():
+    global _sync_daemon
+    if _sync_daemon is None:
+        from loci_engine.node_sync_daemon import NodeSyncDaemon
+        _sync_daemon = NodeSyncDaemon()
+    return _sync_daemon
+
 MCP_TOOLS = [
     {
         "name": "memory_search_lexical",
@@ -457,6 +466,35 @@ MCP_TOOLS = [
                 "vram_estimate_mb": {"type": "integer", "description": "Estimated VRAM needed in MB (0 = auto)", "default": 0}
             },
             "required": ["model"]
+        }
+    },
+    # --- Node Sync ---
+    {
+        "name": "sync_node_status",
+        "description": "Current sync state for this node: version vector, memory Merkle root, Glassbox chain head, and cumulative delta stats. Use to check whether this node is ahead, behind, or in sync with peers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "sync_anti_entropy",
+        "description": "Full anti-entropy fingerprint: memory item count + Merkle root + Glassbox entry count + chain head. Share with a peer node to detect divergence without sending full data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "sync_add_peer",
+        "description": "Add a peer node to this node's sync topology at runtime. The peer will receive memory and Glassbox deltas on the next poll cycle.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "host": {"type": "string", "description": "Peer hostname or IP address"},
+                "port": {"type": "integer", "description": "Peer sync port", "default": 5556}
+            },
+            "required": ["host"]
         }
     }
 ]
@@ -906,6 +944,38 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
                 model=args.get("model", "loci-agent"),
                 vram_estimate_mb=args.get("vram_estimate_mb", 0),
             )
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        # --- Node Sync handlers ---
+        elif tool_name == "sync_node_status":
+            daemon = _get_sync_daemon()
+            result = daemon.run_once()
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "sync_anti_entropy":
+            daemon = _get_sync_daemon()
+            result = daemon.get_anti_entropy_state()
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+            }
+
+        elif tool_name == "sync_add_peer":
+            daemon = _get_sync_daemon()
+            host = args.get("host", "")
+            port = int(args.get("port", 5556))
+            daemon.add_peer(host, port)
+            result = {
+                "added": True,
+                "peer": f"{host}:{port}",
+                "total_peers": len(daemon._peers),
+            }
             return {
                 "jsonrpc": "2.0", "id": req_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}

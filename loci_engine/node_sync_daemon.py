@@ -196,17 +196,54 @@ class MerkleTree:
         return hashes[0]
 
 
+class GlassboxSyncState:
+    """
+    Tracks which Glassbox entries this node has already published to peers.
+    Detects new entries by comparing last-sent chain head to current head.
+    """
+
+    def __init__(self):
+        self._last_sent_hash: Optional[str] = None
+        self._lock = threading.Lock()
+
+    def drain_new_entries(self) -> List[Dict[str, Any]]:
+        """Return unsent Glassbox entries and advance the cursor."""
+        from loci_engine.glassbox import glassbox_new_entries_since
+        with self._lock:
+            entries = glassbox_new_entries_since(self._last_sent_hash)
+            if entries:
+                self._last_sent_hash = entries[-1]["entry_hash"]
+            return entries
+
+    def chain_head(self) -> Optional[str]:
+        from loci_engine.glassbox import _read_ledger
+        entries = _read_ledger()
+        return entries[-1]["entry_hash"] if entries else None
+
+    def total_count(self) -> int:
+        from loci_engine.glassbox import _read_ledger
+        return len(_read_ledger())
+
+
 class SyncDelta:
-    """Wire format for a sync delta message."""
+    """Wire format for a sync delta message (memory items + Glassbox entries)."""
 
     @staticmethod
-    def encode(node_id: str, version_vector: Dict[str, int], items: List[Dict[str, Any]]) -> bytes:
+    def encode(
+        node_id: str,
+        version_vector: Dict[str, int],
+        items: List[Dict[str, Any]],
+        glassbox_entries: Optional[List[Dict[str, Any]]] = None,
+    ) -> bytes:
+        gb = glassbox_entries or []
         payload = {
             "node_id": node_id,
             "version_vector": version_vector,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "items": items,
             "merkle_root": MerkleTree.compute_tree_root(items),
+            "glassbox_entries": gb,
+            "glassbox_count": len(gb),
         }
         return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
@@ -228,10 +265,18 @@ class NodeSyncDaemon:
         self.node_id = node_id
         self.version_vector = VersionVector(node_id)
         self.change_detector = WALChangeDetector(db_path)
+        self.glassbox_sync = GlassboxSyncState()
         self.merger = CRDTMerger()
         self._running = False
         self._peers: List[Tuple[str, int]] = []
-        self._stats = {"deltas_sent": 0, "deltas_received": 0, "merges_applied": 0, "conflicts": 0}
+        self._stats = {
+            "deltas_sent": 0,
+            "deltas_received": 0,
+            "merges_applied": 0,
+            "conflicts": 0,
+            "glassbox_entries_sent": 0,
+            "glassbox_entries_received": 0,
+        }
 
     def add_peer(self, host: str, port: int = SYNC_PORT_SUB):
         self._peers.append((host, port))
@@ -277,20 +322,31 @@ class NodeSyncDaemon:
         except Exception:
             pass
 
+        # Apply remote Glassbox entries (idempotent)
+        gb_applied = 0
+        from loci_engine.glassbox import glassbox_apply_remote
+        for gb_entry in delta.get("glassbox_entries", []):
+            if glassbox_apply_remote(gb_entry, self.db_path):
+                gb_applied += 1
+
         self._stats["deltas_received"] += 1
         self._stats["merges_applied"] += applied
-        return applied
+        self._stats["glassbox_entries_received"] += gb_applied
+        return applied + gb_applied
 
     def poll_and_publish(self) -> Optional[bytes]:
         changes = self.change_detector.detect_changes()
-        if not changes:
+        gb_entries = self.glassbox_sync.drain_new_entries()
+
+        if not changes and not gb_entries:
             return None
 
-        seq = self.version_vector.tick()
+        self.version_vector.tick()
         delta_bytes = SyncDelta.encode(
-            self.node_id, self.version_vector.snapshot(), changes
+            self.node_id, self.version_vector.snapshot(), changes, gb_entries
         )
         self._stats["deltas_sent"] += 1
+        self._stats["glassbox_entries_sent"] += len(gb_entries)
         return delta_bytes
 
     def run_once(self) -> Dict[str, Any]:
@@ -301,6 +357,8 @@ class NodeSyncDaemon:
             "delta_size": len(delta) if delta else 0,
             "stats": dict(self._stats),
             "version_vector": self.version_vector.snapshot(),
+            "glassbox_chain_head": self.glassbox_sync.chain_head(),
+            "glassbox_total": self.glassbox_sync.total_count(),
         }
 
     def get_anti_entropy_state(self) -> Dict[str, Any]:
@@ -318,6 +376,8 @@ class NodeSyncDaemon:
             "version_vector": self.version_vector.snapshot(),
             "merkle_root": MerkleTree.compute_tree_root(items),
             "item_count": len(items),
+            "glassbox_chain_head": self.glassbox_sync.chain_head(),
+            "glassbox_total": self.glassbox_sync.total_count(),
         }
 
 

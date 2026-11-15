@@ -82,5 +82,102 @@ class TestGlassbox(unittest.TestCase):
         self.assertEqual(stats["authors"]["claude"], 1)
 
 
+class TestGlassboxSync(unittest.TestCase):
+    """Tests for cross-node sync: apply_remote + new_entries_since."""
+
+    def setUp(self):
+        self._tmpfile = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False)
+        self._tmpfile.close()
+        gb.GLASSBOX_PATH = self._tmpfile.name
+        with open(self._tmpfile.name, "w"):
+            pass
+
+    def tearDown(self):
+        os.unlink(self._tmpfile.name)
+
+    def test_apply_remote_new_entry(self):
+        """A remote entry not in the local ledger is applied and readable."""
+        remote_entry = gb.glassbox_learn("remote_agent", "agent", "Remote insight")
+        # Clear ledger to simulate a fresh node
+        with open(gb.GLASSBOX_PATH, "w"):
+            pass
+        applied = gb.glassbox_apply_remote(remote_entry)
+        self.assertTrue(applied)
+        entries = gb._read_ledger()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["entry_hash"], remote_entry["entry_hash"])
+
+    def test_apply_remote_idempotent(self):
+        """Applying the same remote entry twice is a no-op the second time."""
+        remote_entry = gb.glassbox_learn("remote_agent", "agent", "Remote insight")
+        with open(gb.GLASSBOX_PATH, "w"):
+            pass
+        gb.glassbox_apply_remote(remote_entry)
+        applied_again = gb.glassbox_apply_remote(remote_entry)
+        self.assertFalse(applied_again)
+        self.assertEqual(len(gb._read_ledger()), 1)
+
+    def test_new_entries_since_none(self):
+        """When last_seen_hash is None, all entries are returned."""
+        gb.glassbox_learn("a", "t", "First")
+        gb.glassbox_learn("b", "t", "Second")
+        entries = gb.glassbox_new_entries_since(None)
+        self.assertEqual(len(entries), 2)
+
+    def test_new_entries_since_known_hash(self):
+        """Only entries after the known hash are returned."""
+        e1 = gb.glassbox_learn("a", "t", "First")
+        gb.glassbox_learn("b", "t", "Second")
+        gb.glassbox_learn("c", "t", "Third")
+        new = gb.glassbox_new_entries_since(e1["entry_hash"])
+        self.assertEqual(len(new), 2)
+        self.assertEqual(new[0]["content"], "Second")
+
+    def test_new_entries_since_head_returns_empty(self):
+        """No new entries when already at the chain head."""
+        gb.glassbox_learn("a", "t", "Only entry")
+        entries = gb._read_ledger()
+        head = entries[-1]["entry_hash"]
+        new = gb.glassbox_new_entries_since(head)
+        self.assertEqual(new, [])
+
+    def test_ensure_table_creates_schema(self):
+        """glassbox_ensure_table creates glassbox_entry table in SQLite."""
+        import sqlite3
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            # Create a minimal SQLite DB (simulate existing DB)
+            conn = sqlite3.connect(db_path)
+            conn.close()
+            gb.glassbox_ensure_table(db_path)
+            conn = sqlite3.connect(db_path)
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            conn.close()
+            self.assertIn("glassbox_entry", tables)
+        finally:
+            os.unlink(db_path)
+
+    def test_write_to_db_mirrors_entry(self):
+        """_write_to_db inserts the entry into glassbox_entry table."""
+        import sqlite3
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.close()
+            entry = gb.glassbox_learn("arko", "operator", "DB mirror test")
+            gb._write_to_db(entry, db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM glassbox_entry WHERE id = ?", (entry["id"],)).fetchone()
+            conn.close()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["entry_hash"], entry["entry_hash"])
+            self.assertEqual(row["author_id"], "arko")
+        finally:
+            os.unlink(db_path)
+
+
 if __name__ == "__main__":
     unittest.main()

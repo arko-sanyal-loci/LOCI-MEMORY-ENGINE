@@ -13,6 +13,7 @@ Trust through transparency, not through walls.
 import hashlib
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,60 @@ GLASSBOX_LOCK = GLASSBOX_PATH + ".lock"
 
 # Hash chain genesis — the root of trust
 GENESIS_HASH = hashlib.sha256(b"LOCI_GLASSBOX_GENESIS_2026").hexdigest()
+
+_GLASSBOX_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS glassbox_entry (
+    id            TEXT PRIMARY KEY,
+    timestamp     TEXT NOT NULL,
+    author_id     TEXT NOT NULL,
+    role_tag      TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    category      TEXT NOT NULL DEFAULT 'observation',
+    supersedes_id TEXT,
+    prev_hash     TEXT NOT NULL,
+    entry_hash    TEXT NOT NULL UNIQUE,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_gb_author   ON glassbox_entry (author_id);
+CREATE INDEX IF NOT EXISTS idx_gb_category ON glassbox_entry (category);
+CREATE INDEX IF NOT EXISTS idx_gb_ts       ON glassbox_entry (timestamp);
+"""
+
+
+def glassbox_ensure_table(db_path: str) -> None:
+    """Create glassbox_entry table in the SQLite DB if it doesn't exist."""
+    if not db_path or not os.path.exists(db_path):
+        return
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_GLASSBOX_TABLE_DDL)
+    conn.commit()
+    conn.close()
+
+
+def _write_to_db(entry: Dict[str, Any], db_path: str) -> None:
+    """Mirror a glassbox entry to SQLite. Silently no-ops if DB unavailable."""
+    if not db_path or not os.path.exists(db_path):
+        return
+    try:
+        glassbox_ensure_table(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """INSERT OR IGNORE INTO glassbox_entry
+               (id, timestamp, author_id, role_tag, content, category,
+                supersedes_id, prev_hash, entry_hash, metadata_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                entry["id"], entry["timestamp"], entry["author_id"],
+                entry["role_tag"], entry["content"], entry["category"],
+                entry.get("supersedes_id"), entry["prev_hash"],
+                entry["entry_hash"],
+                json.dumps(entry.get("metadata") or {}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # DB write failure must never block the .jsonl append
 
 
 def _utc_iso() -> str:
@@ -90,6 +145,10 @@ def glassbox_learn(
 
     with open(GLASSBOX_PATH, "a") as f:
         f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+
+    db_path = os.getenv("LOCI_DB_PATH", "")
+    if db_path:
+        _write_to_db(entry, db_path)
 
     return entry
 
@@ -182,3 +241,41 @@ def glassbox_stats() -> Dict[str, Any]:
         "last_entry": entries[-1]["timestamp"],
         "chain_head": entries[-1]["entry_hash"],
     }
+
+
+def glassbox_apply_remote(entry: Dict[str, Any], db_path: str = "") -> bool:
+    """
+    Apply a remote Glassbox entry received from a sync delta.
+    Idempotent: silently skips if entry_hash is already in the ledger.
+    Appends to .jsonl and mirrors to SQLite.
+    Returns True if the entry was new and applied.
+    """
+    db_path = db_path or os.getenv("LOCI_DB_PATH", "")
+    existing = {e["entry_hash"] for e in _read_ledger()}
+    if entry["entry_hash"] in existing:
+        return False
+
+    with open(GLASSBOX_PATH, "a") as f:
+        f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+
+    if db_path:
+        _write_to_db(entry, db_path)
+
+    return True
+
+
+def glassbox_new_entries_since(last_seen_hash: Optional[str]) -> List[Dict[str, Any]]:
+    """
+    Return every Glassbox entry that follows `last_seen_hash` in the chain.
+    Used by NodeSyncDaemon to build Glassbox deltas for peers.
+    If `last_seen_hash` is None, returns all entries.
+    """
+    entries = _read_ledger()
+    if not entries or last_seen_hash is None:
+        return entries
+
+    for i, e in enumerate(entries):
+        if e["entry_hash"] == last_seen_hash:
+            return entries[i + 1:]
+
+    return entries  # hash not found — peer is behind, send everything
