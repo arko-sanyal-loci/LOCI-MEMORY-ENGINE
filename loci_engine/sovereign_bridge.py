@@ -8,6 +8,7 @@ import sys
 import os
 import json
 import time
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -41,6 +42,12 @@ from loci_engine.gpu_governor import (
 _engine = StorageEngine()
 router = APIRouter(prefix="/loci", tags=["LOCI Engine Bridge"])
 
+_SESSION_TOKENS: Dict[str, str] = {}
+
+
+def get_session_token(agent_id: str) -> Optional[str]:
+    return _SESSION_TOKENS.get(agent_id)
+
 OLLAMA_DEFAULT = "http://127.0.0.1:11434"
 
 
@@ -68,6 +75,11 @@ class AgentMessageReq(BaseModel):
     priority: str = "normal"
 
 
+class AgentVerifyReq(BaseModel):
+    agent_id: str
+    session_token: str
+
+
 @router.post("/agent/register")
 async def bridge_agent_register(req: AgentRegisterReq):
     result = register_agent(
@@ -78,13 +90,33 @@ async def bridge_agent_register(req: AgentRegisterReq):
         endpoint=req.endpoint,
         vram_mb=req.vram_mb,
     )
+    token = hashlib.sha256(
+        f"{req.agent_id}:{req.agent_type}:{int(time.time())}:{os.urandom(16).hex()}".encode()
+    ).hexdigest()[:32]
+    _SESSION_TOKENS[req.agent_id] = token
     glassbox_learn(
         author_id=req.agent_id,
         role_tag="agent_lifecycle",
-        content=f"Agent {req.agent_id} registered via sovereign bridge ({req.agent_type})",
-        category="event",
+        content=f"Agent {req.agent_id} registered via sovereign bridge ({req.agent_type}); session token issued",
+        category="provenance",
     )
+    result["session_token"] = token
     return result
+
+
+@router.post("/agent/verify")
+async def bridge_agent_verify(req: AgentVerifyReq):
+    stored = _SESSION_TOKENS.get(req.agent_id)
+    verified = stored is not None and stored == req.session_token
+    glassbox_learn(
+        author_id=req.agent_id,
+        role_tag="agent_lifecycle",
+        content=f"Session verify for {req.agent_id}: {'OK' if verified else 'FAIL -- token mismatch or unknown agent'}",
+        category="provenance",
+    )
+    if not verified:
+        raise HTTPException(status_code=401, detail="session_token invalid or agent not registered")
+    return {"verified": True, "agent_id": req.agent_id}
 
 
 @router.post("/agent/heartbeat")

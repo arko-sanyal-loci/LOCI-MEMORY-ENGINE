@@ -260,9 +260,10 @@ class NodeSyncDaemon:
     Default uses TCP sockets for simplicity (no ZeroMQ dependency required).
     """
 
-    def __init__(self, db_path: str = DB_PATH, node_id: str = NODE_ID):
+    def __init__(self, db_path: str = DB_PATH, node_id: str = NODE_ID, glassbox_enabled: bool = True):
         self.db_path = db_path
         self.node_id = node_id
+        self._glassbox_enabled = glassbox_enabled
         self.version_vector = VersionVector(node_id)
         self.change_detector = WALChangeDetector(db_path)
         self.glassbox_sync = GlassboxSyncState()
@@ -332,6 +333,18 @@ class NodeSyncDaemon:
         self._stats["deltas_received"] += 1
         self._stats["merges_applied"] += applied
         self._stats["glassbox_entries_received"] += gb_applied
+        if applied > 0 and self._glassbox_enabled:
+            try:
+                from loci_engine.glassbox import glassbox_learn
+                glassbox_learn(
+                    author_id=f"sync:{self.node_id}",
+                    role_tag="node_sync",
+                    content=f"Merged {applied} items from {delta['node_id']} (conflicts: {self._stats['conflicts']})",
+                    category="calibration",
+                    metadata={"source_node": delta["node_id"], "applied": applied},
+                )
+            except Exception:
+                pass
         return applied + gb_applied
 
     def poll_and_publish(self) -> Optional[bytes]:
@@ -347,6 +360,18 @@ class NodeSyncDaemon:
         )
         self._stats["deltas_sent"] += 1
         self._stats["glassbox_entries_sent"] += len(gb_entries)
+        if self._glassbox_enabled:
+            try:
+                from loci_engine.glassbox import glassbox_learn
+                glassbox_learn(
+                    author_id=f"sync:{self.node_id}",
+                    role_tag="node_sync",
+                    content=f"Published delta: {len(changes)} changed items, {len(gb_entries)} glassbox entries",
+                    category="calibration",
+                    metadata={"item_count": len(changes), "glassbox_count": len(gb_entries)},
+                )
+            except Exception:
+                pass
         return delta_bytes
 
     def run_once(self) -> Dict[str, Any]:
