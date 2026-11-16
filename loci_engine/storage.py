@@ -206,13 +206,22 @@ class StorageEngine:
 
     def decay_stored_heat(
         self,
-        tau_days: float = 3.0,
+        tau_days: Optional[float] = None,
         alpha: float = 0.05,
         reference_time: Optional[str] = None,
     ) -> int:
-        """Recompute and persist heat for all active items using A1/A2 decay."""
+        """Recompute and persist heat using tier-aware tau values (Spark, Nov 2026).
+
+        When tau_days is None (default), each item's tau is chosen by its
+        current heat tier per the canonical hardware schema in heat.py:
+          HOT  (H >= 0.80): tau = 1.25 days
+          MILD (H >= 0.35): tau = 1.75 days
+          COLD (H <  0.35): tau = 2.25 days
+        Pass an explicit tau_days to override tier-aware selection.
+        """
         import math as _math
         from datetime import datetime as _dt, timezone as _tz
+        from loci_engine.heat import TIER_TAU, TIER_HOT_BOUNDARY, TIER_MILD_BOUNDARY
 
         now_str = reference_time or self._utc_now()
         try:
@@ -238,7 +247,17 @@ class StorageEngine:
                 elapsed = max(0.0, (now_dt - last_obs).total_seconds() / 86400.0)
                 item_alpha = row["alpha"] if row["alpha"] > 0 else alpha
 
-                evidence = 1.0 / (1.0 + elapsed / tau_days)
+                # Tier-aware tau unless caller overrides
+                if tau_days is not None:
+                    effective_tau = tau_days
+                elif row["heat"] >= TIER_HOT_BOUNDARY:
+                    effective_tau = TIER_TAU["hot"]
+                elif row["heat"] >= TIER_MILD_BOUNDARY:
+                    effective_tau = TIER_TAU["mild"]
+                else:
+                    effective_tau = TIER_TAU["cold"]
+
+                evidence = 1.0 / (1.0 + elapsed / effective_tau)
                 raw = item_alpha + (1.0 - item_alpha) * (1.0 - _math.exp(-evidence))
                 new_heat = max(item_alpha + 1e-9, min(1.0 - 1e-9, raw))
 

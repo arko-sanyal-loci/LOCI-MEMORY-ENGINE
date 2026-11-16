@@ -73,6 +73,31 @@ MEMORY_CLASSES: Dict[str, MemoryClass] = {
     "routine_observation": MemoryClass("routine_observation", tau_days=3.0, alpha=0.05),
 }
 
+# ===========================================================================
+# B2 — Hardware Tier Schema (empirically validated by Spark, Nov 2026)
+#
+# Tier boundaries and tau values come from heat_schema.py and were confirmed
+# by Spark's 300-trial parameter sweep (playground/fine_grained_sweep.py).
+# θ_HOT=0.700 is the VRAM working-set admission threshold (not the tier
+# boundary); tier classification uses the values below.
+# ===========================================================================
+
+ALPHA_FLOOR: float = 0.0500   # Constant of Hope — heat never reaches zero
+HEAT_CEILING: float = 0.9999  # Open-interval ceiling — heat never reaches 1.0
+VRAM_ADMISSION_THRESHOLD: float = 0.700  # θ_HOT proven optimal by Spark sweep
+
+# Heat tier classification boundaries and their associated decay tau (days).
+# Tier tau is how quickly an item decays through that tier when unaccessed.
+TIER_HOT_BOUNDARY: float = 0.8000   # H >= this → HOT  (VRAM active working set)
+TIER_MILD_BOUNDARY: float = 0.3500  # H >= this → MILD (Host RAM arena)
+                                     # H <  this → COLD (NVMe archival ledger)
+
+TIER_TAU: Dict[str, float] = {
+    "hot":  1.25,  # days — recency-sensitive; cools within ~1.25 days unaccessed
+    "mild": 1.75,  # days — intermediate decay
+    "cold": 2.25,  # days — archival; preserved longer before eviction
+}
+
 
 # ===========================================================================
 # A1 — Evidence Accumulation
@@ -190,15 +215,15 @@ def decay(heat_value: float, elapsed: float, tau: float) -> float:
 
 
 def tier(heat_value: float) -> str:
-    """Map a heat value to a coarse, human-readable tier.
+    """Map a heat value to the canonical 3-tier hardware routing label.
 
-    Display/routing convenience only — never a decision gate on its own.
-    Thresholds are deliberately coarse quartiles of the open interval.
+    Boundaries from heat_schema.py, validated by Spark's Nov 2026 sweep.
+    hot  → VRAM active working set  (H >= 0.8000)
+    mild → Host RAM SymLinkPrev     (H >= 0.3500)
+    cold → NVMe archival ledger     (H <  0.3500)
     """
-    if heat_value >= 0.80:
+    if heat_value >= TIER_HOT_BOUNDARY:
         return "hot"
-    if heat_value >= 0.50:
-        return "warm"
-    if heat_value >= 0.20:
-        return "cool"
+    if heat_value >= TIER_MILD_BOUNDARY:
+        return "mild"
     return "cold"
