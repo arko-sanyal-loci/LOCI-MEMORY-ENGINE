@@ -62,9 +62,11 @@ from loci_engine.gpu_governor import (
     get_model_allocation_plan,
     route_inference,
 )
+from loci_engine.node_sync_daemon import NodeSyncDaemon
 
 storage = StorageEngine()
 loop_guard = LoopGuardCircuitBreaker(threshold=3)
+sync_daemon = NodeSyncDaemon()
 
 _sync_daemon = None
 
@@ -471,19 +473,18 @@ MCP_TOOLS = [
     # --- Node Sync ---
     {
         "name": "sync_node_status",
-        "description": "Current sync state for this node: version vector, memory Merkle root, Glassbox chain head, and cumulative delta stats. Use to check whether this node is ahead, behind, or in sync with peers.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {}
-        }
+        "description": "Current sync state: version vector, Merkle root, Glassbox chain head, cumulative delta stats.",
+        "inputSchema": {"type": "object", "properties": {}}
     },
     {
         "name": "sync_anti_entropy",
-        "description": "Full anti-entropy fingerprint: memory item count + Merkle root + Glassbox entry count + chain head. Share with a peer node to detect divergence without sending full data.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {}
-        }
+        "description": "Full anti-entropy fingerprint: memory item count + Merkle root + Glassbox entry count + chain head.",
+        "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "sync_force",
+        "description": "Force a sync poll -- detect local changes and produce a delta for publishing to peers.",
+        "inputSchema": {"type": "object", "properties": {}}
     },
     {
         "name": "sync_add_peer",
@@ -1035,6 +1036,28 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
     elif method == "loop_guard.reset":
         loop_guard.reset()
         return {"jsonrpc": "2.0", "id": req_id, "result": {"status": "reset_successful"}}
+
+    if method == "tools/call":
+        tool_name = params.get("name")
+        args = params.get("arguments", {})
+
+        if tool_name == "sync_status":
+            state = sync_daemon.get_anti_entropy_state()
+            state["stats"] = dict(sync_daemon._stats)
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": json.dumps(state)}]}}
+
+        elif tool_name == "sync_force":
+            result = sync_daemon.run_once()
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
+
+        elif tool_name == "sync_peers":
+            action = args.get("action", "list")
+            if action == "add":
+                host = args.get("host")
+                port = int(args.get("port", 5556))
+                if host:
+                    sync_daemon.add_peer(host, port)
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": json.dumps({"peers": sync_daemon._peers})}]}}
 
     return {
         "jsonrpc": "2.0",
