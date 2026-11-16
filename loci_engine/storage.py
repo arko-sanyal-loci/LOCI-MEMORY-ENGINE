@@ -8,10 +8,15 @@ import sqlite3
 import os
 import json
 import hashlib
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 
 DB_PATH = os.getenv("LOCI_DB_PATH", os.path.expanduser("~/loci-memory-engine/context2.db"))
+
+# Paper 08: asymmetric trust gate thresholds
+_TRUST_FLOOR = 0.8      # new_trust must be >= old_trust * 0.8 to supersede
+_TRUST_DOMINANT = 1.2   # new_trust >= old_trust * 1.2 → unconditional supersession
 
 DDL_SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -270,6 +275,125 @@ class StorageEngine:
 
             conn.commit()
         return updated
+
+    # ------------------------------------------------------------------
+    # Paper 08 — Persistent Memory Engine: structured fact versioning
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fact_key(entity_id: str, key: str) -> str:
+        return f"{entity_id}\x1f{key}"
+
+    def _get_active_fact(self, namespace: str, fact_key: str) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM memory_item WHERE namespace = ? AND item_type = 'fact' "
+                "AND lexical_text = ? AND status = 'active' ORDER BY valid_from DESC LIMIT 1",
+                (namespace, fact_key),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def upsert_fact(
+        self,
+        entity_id: str,
+        key: str,
+        value: Any,
+        source_trust: float = 0.95,
+        namespace: str = "facts",
+        source_actor: str = "kernel",
+    ) -> Dict[str, Any]:
+        fact_key = self._fact_key(entity_id, key)
+        structured = json.dumps({"entity_id": entity_id, "key": key, "value": value})
+        canonical = f"{entity_id}.{key} = {value}"
+        new_id = str(uuid.uuid4())
+
+        existing = self._get_active_fact(namespace, fact_key)
+
+        if existing:
+            old_trust = existing["source_trust"]
+            trust_ratio = source_trust / old_trust if old_trust > 0 else float("inf")
+
+            if trust_ratio < _TRUST_FLOOR:
+                return {
+                    "accepted": False,
+                    "action": "rejected",
+                    "reason": "trust_below_floor",
+                    "trust_ratio": round(trust_ratio, 4),
+                    "existing_id": existing["id"],
+                }
+
+            dominant = trust_ratio >= _TRUST_DOMINANT
+            self.insert_fact(
+                item_id=new_id,
+                namespace=namespace,
+                canonical_text=canonical,
+                source_trust=source_trust,
+                source_actor=source_actor,
+                supersedes_id=existing["id"],
+            )
+            with self._get_connection() as conn:
+                conn.execute(
+                    "UPDATE memory_item SET structured_value = ?, lexical_text = ? WHERE id = ?",
+                    (structured, fact_key, new_id),
+                )
+            return {
+                "accepted": True,
+                "action": "superseded",
+                "id": new_id,
+                "superseded_id": existing["id"],
+                "trust_ratio": round(trust_ratio, 4),
+                "dominant": dominant,
+            }
+
+        self.insert_fact(
+            item_id=new_id,
+            namespace=namespace,
+            canonical_text=canonical,
+            source_trust=source_trust,
+            source_actor=source_actor,
+        )
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE memory_item SET structured_value = ?, lexical_text = ? WHERE id = ?",
+                (structured, fact_key, new_id),
+            )
+        return {"accepted": True, "action": "inserted", "id": new_id}
+
+    def get_current_fact(
+        self, entity_id: str, key: str, namespace: str = "facts"
+    ) -> Optional[Dict[str, Any]]:
+        return self._get_active_fact(namespace, self._fact_key(entity_id, key))
+
+    def get_fact_at(
+        self, entity_id: str, key: str, as_of: str, namespace: str = "facts"
+    ) -> Optional[Dict[str, Any]]:
+        fact_key = self._fact_key(entity_id, key)
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM memory_item WHERE namespace = ? AND item_type = 'fact' "
+                "AND lexical_text = ? AND valid_from <= ? "
+                "AND (valid_until IS NULL OR valid_until > ?) "
+                "ORDER BY valid_from DESC LIMIT 1",
+                (namespace, fact_key, as_of, as_of),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_fact_history(
+        self, entity_id: str, key: str, namespace: str = "facts"
+    ) -> List[Dict[str, Any]]:
+        fact_key = self._fact_key(entity_id, key)
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM memory_item WHERE namespace = ? AND item_type = 'fact' "
+                "AND lexical_text = ? ORDER BY valid_from DESC",
+                (namespace, fact_key),
+            )
+            return [dict(r) for r in cur.fetchall()]
 
     def ingest_session_turn(
         self,
