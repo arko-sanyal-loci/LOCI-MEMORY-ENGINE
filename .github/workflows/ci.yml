@@ -16,6 +16,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
+        run: |
+          pip install pytest
+          pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
       - name: Run tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
