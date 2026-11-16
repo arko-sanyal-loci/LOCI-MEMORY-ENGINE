@@ -126,7 +126,8 @@ class StorageEngine:
         source_trust: float = 0.95,
         era: str = "mid",
         alpha: float = 0.01,
-        supersedes_id: Optional[str] = None
+        supersedes_id: Optional[str] = None,
+        source_actor: str = "kernel",
     ) -> str:
         now = self._utc_now()
         content_hash = hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
@@ -147,10 +148,10 @@ class StorageEngine:
                     sensitivity, era, alpha, heat, last_observed_at,
                     valid_from, status, content_hash, created_at, updated_at,
                     supersedes_id
-                ) VALUES (?, ?, 'fact', ?, ?, 'evt_boot', 'kernel', ?, 1.0, 'local_only', ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+                ) VALUES (?, ?, 'fact', ?, ?, 'evt_boot', ?, ?, 1.0, 'local_only', ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
             """, (
                 item_id, namespace, canonical_text, canonical_text.lower(),
-                source_trust, era, alpha, heat, now, now, content_hash, now, now, supersedes_id
+                source_actor, source_trust, era, alpha, heat, now, now, content_hash, now, now, supersedes_id
             ))
             conn.commit()
         return item_id
@@ -166,3 +167,108 @@ class StorageEngine:
             """, (query, limit))
             rows = cur.fetchall()
             return [dict(r) for r in rows]
+
+    def fetch_active_items(
+        self,
+        namespace: Optional[str] = None,
+        source_actor: Optional[str] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Return active memory_item rows as dicts, pre-filtered for CARD."""
+        clauses = ["status = 'active'"]
+        params: list = []
+
+        if namespace:
+            clauses.append("namespace = ?")
+            params.append(namespace)
+        if source_actor:
+            clauses.append("source_actor = ?")
+            params.append(source_actor)
+
+        where = " AND ".join(clauses)
+        params.append(limit)
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT * FROM memory_item WHERE {where} "
+                f"ORDER BY heat DESC LIMIT ?",
+                params,
+            )
+            rows = cur.fetchall()
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            item.setdefault("timestamp", item.get("created_at", ""))
+            result.append(item)
+        return result
+
+    def decay_stored_heat(
+        self,
+        tau_days: float = 3.0,
+        alpha: float = 0.05,
+        reference_time: Optional[str] = None,
+    ) -> int:
+        """Recompute and persist heat for all active items using A1/A2 decay."""
+        import math as _math
+        from datetime import datetime as _dt, timezone as _tz
+
+        now_str = reference_time or self._utc_now()
+        try:
+            now_dt = _dt.fromisoformat(now_str)
+        except ValueError:
+            now_dt = _dt.now(_tz.utc)
+
+        updated = 0
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, last_observed_at, alpha, heat FROM memory_item "
+                "WHERE status = 'active'"
+            )
+            rows = cur.fetchall()
+
+            for row in rows:
+                try:
+                    last_obs = _dt.fromisoformat(row["last_observed_at"])
+                except (ValueError, TypeError):
+                    continue
+
+                elapsed = max(0.0, (now_dt - last_obs).total_seconds() / 86400.0)
+                item_alpha = row["alpha"] if row["alpha"] > 0 else alpha
+
+                evidence = 1.0 / (1.0 + elapsed / tau_days)
+                raw = item_alpha + (1.0 - item_alpha) * (1.0 - _math.exp(-evidence))
+                new_heat = max(item_alpha + 1e-9, min(1.0 - 1e-9, raw))
+
+                if abs(new_heat - row["heat"]) > 1e-6:
+                    cur.execute(
+                        "UPDATE memory_item SET heat = ?, updated_at = ? WHERE id = ?",
+                        (new_heat, now_str, row["id"]),
+                    )
+                    updated += 1
+
+            conn.commit()
+        return updated
+
+    def ingest_session_turn(
+        self,
+        turn_id: str,
+        role: str,
+        content: str,
+        namespace: str = "session",
+        heat: float = 0.75,
+        era: str = "near",
+        source_actor: str = "user",
+    ) -> str:
+        """Write a single conversation turn to memory_item."""
+        return self.insert_fact(
+            item_id=turn_id,
+            namespace=namespace,
+            canonical_text=f"[{role.upper()}] {content}",
+            heat=heat,
+            source_actor=source_actor,
+            source_trust=1.0,
+            era=era,
+        )

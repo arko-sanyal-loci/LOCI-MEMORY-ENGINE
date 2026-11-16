@@ -87,10 +87,20 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _entry_hash(ts: str, author_id: str, role_tag: str, content: str, prev_hash: str) -> str:
-    """A4 provenance: SHA256(ts || author_id || role_tag || content || prev_hash)"""
-    payload = f"{ts}||{author_id}||{role_tag}||{content}||{prev_hash}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+def _entry_hash(entry: Dict[str, Any], prev_hash: str) -> str:
+    """Canonical SHA-256 over all entry fields — includes category, supersedes_id, metadata."""
+    payload = {
+        "timestamp": entry["timestamp"],
+        "author_id": entry["author_id"],
+        "role_tag": entry["role_tag"],
+        "content": entry["content"],
+        "category": entry.get("category", "observation"),
+        "supersedes_id": entry.get("supersedes_id"),
+        "metadata": entry.get("metadata") or {},
+        "prev_hash": prev_hash,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _read_ledger() -> List[Dict[str, Any]]:
@@ -128,7 +138,12 @@ def glassbox_learn(
     """
     ts = _utc_iso()
     prev_hash = _last_hash()
-    entry_hash = _entry_hash(ts, author_id, role_tag, content, prev_hash)
+    _partial = {
+        "timestamp": ts, "author_id": author_id, "role_tag": role_tag,
+        "content": content, "category": category,
+        "supersedes_id": supersedes_id, "metadata": metadata or {},
+    }
+    entry_hash = _entry_hash(_partial, prev_hash)
 
     entry = {
         "id": f"gb_{entry_hash[:12]}",
@@ -183,13 +198,7 @@ def glassbox_verify_chain() -> Dict[str, Any]:
 
     prev = GENESIS_HASH
     for i, entry in enumerate(entries):
-        expected = _entry_hash(
-            entry["timestamp"],
-            entry["author_id"],
-            entry["role_tag"],
-            entry["content"],
-            prev,
-        )
+        expected = _entry_hash(entry, prev)
         if entry["entry_hash"] != expected:
             return {
                 "valid": False,
