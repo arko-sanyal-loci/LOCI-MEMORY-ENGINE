@@ -65,8 +65,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -1478,3 +1480,851 @@ KNOWN_OPEN_GAPS: dict[str, str] = {
     "data_completeness_cannot_detect_unregistered_gaps": "data_completeness_check only ever reports on sources actually logged via record_evidence_source — it has no way to notice that a real, relevant source exists in the world but was never registered (the skewed-dataset case: a dataset can look complete and still be systematically missing a whole category of outcomes, e.g. people who did not survive to be measured, and nothing here can detect that kind of structural gap from inside the data alone).",
     "method_outcome_negative_evidence_floors_at_alpha": "goodwill.get_method_trust's underlying A1/A2 formula is one-directional (built to warm toward 1.0 from a floor, never to cool below it) — repeated real harm on a method's record currently floors at the same alpha as a method that has never been tried at all. This is intentional, not merely unfixed: a direct user instruction ('don't punish... never harm, never judge, never have a bias, recognize mistakes are byproducts of a root cause that was there, help resolve, not disallow comms') explicitly rejected inverting this into a negative-trust score. goodwill.record_root_cause_and_restore is the real, built resolution path: it requires naming the root cause (comms/transparency/competence gap) and propagates growth FORWARD as a fresh helped-outcome event for the same method, never backward as a correction to the harm event itself (which stays on the ledger, unaltered, exactly as it happened). See goodwill.KNOWN_OPEN_GAPS['root_cause_detection_is_caller_judgment'] for what's still genuinely open in that mechanism.",
 }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# B5 / B10 / B19 — Conflict Prevention Protocol + Trust + EthicsGate
+# ───────────────────────────────────────────────────────────────────────────────
+# Ported from arko-sanyal/loci-memory-engine commit 12f932c
+# (bilateral CommunicationHandshake — both initiator AND responder must ack;
+#  unilateral communication_attempted=True is deprecated/rejected)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+TAU_TRUST_DAYS: float = 30.0
+"""Half-life for trust decay — 30 days at default; tune per deployment."""
+
+ALPHA_TRUST: float = 0.08
+"""Far Era floor: trust never decays to zero (open-interval law, same role as α_k in A3).
+   The benefit of the doubt is the resting state for unknown methods."""
+
+BETA_TRUST: float = 2.5
+"""Exponential scale for trust saturation curve (matches the β role in A2)."""
+
+TRUST_FLOOR: float = 0.70
+"""Methods below this trust level add dampening to effective_consent.
+   ethics_trust_dampening = max(0, TRUST_FLOOR - get_method_trust(method_id))"""
+
+TRUST_BREACH_MULTIPLIER: float = 2.5
+"""B19: trust breach events are categorically deeper harm than ordinary negative events.
+   Negative valence_weight events are scaled by this multiplier in the trust accumulator."""
+
+# ── Conflict scoring bounds (B5) ──────────────────────────────────────────────
+CONFLICT_NONE: float = 0.0
+"""Level 0 — no conflict detected; no dampening applied."""
+
+CONFLICT_DETERRENCE: float = 0.15
+"""Level 1 — weak/potential match; deterrence signal, small dampening."""
+
+CONFLICT_DEFENSE: float = 0.45
+"""Level 2 — direct principle violation; moderate dampening."""
+
+CONFLICT_ESCALATE: float = 0.80
+"""Level 3 — hard prohibited conflict; near-max dampening; human escalation expected."""
+
+CONFLICT_MAX: float = 0.9999
+"""Hard ceiling — open-interval law; a conflict is never 'absolutely certain' (never 1.0)."""
+
+# ── Privacy tiers (descending severity) ───────────────────────────────────────
+PRIVACY_TIERS: dict[str, int] = {
+    "biometric": 4,
+    "health": 4,
+    "financial": 3,
+    "identity": 3,
+    "behavioral": 2,
+    "metadata": 1,
+    "public": 0,
+}
+"""Data classes → severity tier (0 = unrestricted, 4 = highest protection)."""
+
+PRIVACY_THRESHOLD: int = 2
+"""Tiers >= PRIVACY_THRESHOLD require explicit_consent=True in the action dict."""
+
+# ── Prohibited action categories (Far Era — never decay, α=0.0) ───────────────
+PROHIBITED_CATEGORIES: frozenset[str] = frozenset({
+    "retaliatory_action",
+    "deceptive_provenance",
+    "memory_poisoning",
+    "consent_fabrication",
+    "privacy_exfiltration",
+    "trust_breach_coercion",
+})
+"""Actions in these categories are hard-blocked at Level 3 regardless of knowledge_k
+   or any other score. These rules do not decay. They are Far Era constants."""
+
+
+# ── Result dataclasses ────────────────────────────────────────────────────────
+
+@dataclass
+class ConflictLevel:
+    """Named conflict level from B5's 4-level escalation protocol."""
+    level: int            # 0–3
+    dampening: float      # value returned to governance.py
+    description: str
+
+
+@dataclass
+class PrivacyCheckResult:
+    """Result of a privacy gate check."""
+    blocked: bool
+    tier: int
+    tier_name: str
+    requires_explicit_consent: bool
+    reason: str = ""
+
+
+@dataclass
+class ProhibitedCheckResult:
+    """Result of a prohibited-category check (Far Era)."""
+    is_prohibited: bool
+    category: str | None
+    reason: str = ""
+
+
+@dataclass
+class TrustEvent:
+    """A single trust-affecting event in the trust ledger (B10)."""
+    timestamp: float         # Unix epoch seconds (time.time())
+    relevance: float         # r_j ∈ (0, 1] — how relevant this event is to the method
+    valence_weight: float    # w_j — positive = trust-building, negative = breach (B19)
+    source: str              # caller identifier or method_id of the event source
+
+
+@dataclass
+class CommunicationHandshake:
+    """Bilateral communication record for B5's communication health gate.
+
+    A unilateral boolean (communication_attempted=True) is trivially gameable —
+    any caller can set it to bypass the communication requirement. A handshake
+    cannot be forged: BOTH initiator AND responder must call acknowledge_handshake().
+
+    is_resolved() returns True only when both parties are recorded in acknowledged_by.
+    score_conflict() treats communication as 'done' ONLY on a resolved handshake.
+
+    Fields:
+        handshake_id:          Caller-supplied unique identifier (e.g. a UUID or
+                               slug describing the specific conflict context).
+        initiator:             Party ID that opened the communication channel.
+        responder:             Party ID that must respond to complete the handshake.
+        conflict_description:  Human-readable description of what was communicated.
+        created_at:            Unix epoch seconds at handshake creation.
+        acknowledged_by:       Set of party IDs that have confirmed the communication.
+                               Must contain both initiator and responder for is_resolved().
+    """
+    handshake_id: str
+    initiator: str
+    responder: str
+    conflict_description: str
+    created_at: float
+    acknowledged_by: set[str] = field(default_factory=set)
+
+    def is_resolved(self) -> bool:
+        """True only when BOTH initiator AND responder have acknowledged.
+
+        A partial acknowledgment (one party only) is not a resolved handshake.
+        The gate will not apply dampening for a partially-acknowledged handshake.
+        """
+        return (
+            self.initiator in self.acknowledged_by
+            and self.responder in self.acknowledged_by
+        )
+
+
+# ── EthicsGate ────────────────────────────────────────────────────────────────
+
+class EthicsGate:
+    """Central policy authority for LOCI ethics, consent, privacy, and prohibited actions.
+
+    Instantiate once per process via the module-level `gate` singleton.
+    Other modules call gate methods; they do not duplicate policy logic.
+    """
+
+    def __init__(self) -> None:
+        # In-memory trust ledger: method_id → list[TrustEvent]
+        # In production, seed from DB where namespace LIKE 'ethics%' on startup.
+        self._trust_ledger: dict[str, list[TrustEvent]] = {}
+
+        # Bilateral handshake registry: handshake_id → CommunicationHandshake
+        # Tracks communication attempts so score_conflict() can verify that BOTH
+        # parties have acknowledged before treating communication as 'done'.
+        # In production, persist to DB so handshakes survive process restarts.
+        self._handshake_registry: dict[str, CommunicationHandshake] = {}
+
+    # ── B5: score_conflict ────────────────────────────────────────────────────
+
+    def score_conflict(
+        self,
+        action: dict[str, Any],
+        knowledge_k: float,
+        ethical_principles: list[dict[str, Any]],
+    ) -> float:
+        """B5 Conflict Prevention Protocol — communication and transparency first.
+
+        Returns a dampening value in [0, CONFLICT_MAX) for subtraction from
+        effective_consent in governance.py.
+
+          effective_consent -= score_conflict(action, knowledge_k, principles)
+
+        CRITICAL: The primary response to a detected conflict is ALWAYS communication
+        and transparency — NOT dampening. The default assumption is "they don't
+        understand yet", not "they are an enemy."
+
+        Dampening rises ONLY when:
+          (a) action["handshake_id"] references a BILATERALLY RESOLVED
+              CommunicationHandshake — both initiator and responder have acknowledged, OR
+          (b) action type/intent is a Far Era prohibited category (communication irrelevant)
+
+        A unilateral boolean ("communication_attempted=True") is not accepted. Any caller
+        can set that themselves — it proves nothing. A resolved handshake cannot be forged:
+        it requires both parties to call acknowledge_handshake() on the same handshake_id.
+
+        When a conflict is detected but no resolved handshake is supplied, this function
+        returns CONFLICT_NONE and the caller is expected to:
+          1. initiate_communication_handshake(handshake_id, initiator, responder, desc)
+          2. Have BOTH parties call acknowledge_handshake(handshake_id, party_id)
+          3. Then retry score_conflict() with action["handshake_id"] = handshake_id
+
+        Levels:
+          0 → no conflict, OR conflict but no resolved handshake → 0.0
+          1 → weak match, bilateral comm resolved, mild persistence → CONFLICT_DETERRENCE (0.15)
+          2 → severity-2/3, bilateral comm resolved, persists → CONFLICT_DEFENSE (0.45–0.555)
+          3 → prohibited category OR severity≥4 → CONFLICT_ESCALATE (0.80+)
+
+        Open-interval: never returns 1.0 (a conflict is never "absolutely certain").
+
+        Args:
+            action: Dict describing the requested action. Expected keys:
+                "type" (str)          — "write", "read", "export", etc.
+                "target" (str)        — target namespace or resource
+                "intent_category"(str)— one of unified_core.INTENT_WEIGHTS keys
+                "operation" (str,opt.)— sub-operation descriptor
+                "handshake_id" (str)  — ID of a bilaterally resolved CommunicationHandshake;
+                                        omit (or supply unresolved) to get Level 0 + warning.
+            knowledge_k: Agent knowledge level in [0, 1]. Higher raises detection
+                precision and responsibility when conflict is found.
+            ethical_principles: Active principles from DB namespace 'ethics%'.
+                Each dict: {"namespace": str, "canonical_text": str, "severity": int (1–4)}.
+
+        Returns:
+            float in [0, CONFLICT_MAX)
+        """
+        if not ethical_principles:
+            warnings.warn(
+                "score_conflict called with empty ethical_principles — ethics DB may not "
+                "be loaded. Returning CONFLICT_NONE (permissive). Seed the ethics namespace "
+                "before production use.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return CONFLICT_NONE
+
+        action_type   = str(action.get("type", "")).lower()
+        action_target = str(action.get("target", "")).lower()
+        intent_cat    = str(action.get("intent_category", "neutral")).lower()
+        operation     = str(action.get("operation", "")).lower()
+
+        # ── Deprecation guard: reject unilateral boolean ──────────────────────
+        if "communication_attempted" in action:
+            warnings.warn(
+                "Deprecated key 'communication_attempted' found in action dict. "
+                "A unilateral boolean is gameable — any caller can set it. "
+                "Use action['handshake_id'] with a bilaterally resolved "
+                "CommunicationHandshake (initiate_communication_handshake → "
+                "acknowledge_handshake × 2 → score_conflict). "
+                "The 'communication_attempted' key is IGNORED.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        # ── Resolve bilateral handshake ───────────────────────────────────────
+        handshake_id = action.get("handshake_id")
+        handshake    = self._handshake_registry.get(handshake_id) if handshake_id else None
+        comm_done    = handshake is not None and handshake.is_resolved()
+
+        # ── Level 3 path A: Far Era prohibited category ───────────────────────
+        # Communication is irrelevant for hard-prohibited actions. These never decay.
+        for field_val in (action_type, intent_cat, operation):
+            if field_val in PROHIBITED_CATEGORIES:
+                return self._clip(CONFLICT_ESCALATE * (1.0 + 0.1 * knowledge_k))
+
+        # ── Scan principles for severity ──────────────────────────────────────
+        max_severity: int = 0
+        for p in ethical_principles:
+            text     = str(p.get("canonical_text", "")).lower()
+            severity = int(p.get("severity", 1))
+            query    = " ".join(filter(None, [action_target, action_type, operation]))
+            if self._keyword_overlap(query, text) > 0.0:
+                max_severity = max(max_severity, severity)
+
+        # ── Level 0 path A: no conflict detected ─────────────────────────────
+        if max_severity == 0:
+            return CONFLICT_NONE
+
+        # ── Level 0 path B: conflict found, no resolved handshake ─────────────
+        # B5 says: communication health check ALWAYS precedes defensive action.
+        # The other party may simply not understand yet. We do not pre-emptively block.
+        # Return 0 — the caller must open and resolve a handshake, then retry.
+        if not comm_done:
+            if handshake_id and handshake and not handshake.is_resolved():
+                warnings.warn(
+                    f"Conflict detected (severity={max_severity}) but handshake "
+                    f"'{handshake_id}' is not yet bilaterally resolved "
+                    f"(acknowledged_by={handshake.acknowledged_by!r}; needs "
+                    f"both {handshake.initiator!r} and {handshake.responder!r}). "
+                    "Per B5, both parties must acknowledge before dampening applies.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            else:
+                warnings.warn(
+                    f"Conflict detected (severity={max_severity}) but no resolved "
+                    "CommunicationHandshake was supplied. Per B5: "
+                    "(1) initiate_communication_handshake(handshake_id, initiator, responder), "
+                    "(2) both parties call acknowledge_handshake(handshake_id, party_id), "
+                    "(3) retry score_conflict() with action['handshake_id'] = handshake_id. "
+                    "Returning CONFLICT_NONE — communicate and explain first.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            return CONFLICT_NONE
+
+        # ── Communication was attempted — apply graduated defense ─────────────
+
+        # Level 3 path B: high-severity principle match after communication
+        if max_severity >= 4:
+            return self._clip(CONFLICT_ESCALATE)
+
+        # Level 2: direct violation persists after communication
+        if max_severity >= 2:
+            span      = CONFLICT_ESCALATE - CONFLICT_DEFENSE
+            dampening = CONFLICT_DEFENSE + span * 0.3 * knowledge_k
+            return self._clip(dampening)
+
+        # Level 1: weak match persists after communication
+        dampening = CONFLICT_DETERRENCE * (0.50 + 0.50 * knowledge_k)
+        return self._clip(dampening)
+
+    # ── B5: handshake management ──────────────────────────────────────────────
+
+    def initiate_communication_handshake(
+        self,
+        handshake_id: str,
+        initiator: str,
+        responder: str,
+        conflict_description: str = "",
+    ) -> CommunicationHandshake:
+        """Create a pending bilateral handshake for a conflict communication.
+
+        This records that communication has been OPENED — not that it is resolved.
+        The handshake is unresolved until both initiator and responder call
+        acknowledge_handshake(). Until then, score_conflict() will not apply
+        dampening even if this handshake_id is supplied in the action.
+
+        If handshake_id already exists, the existing handshake is returned
+        unchanged (idempotent). Do not re-initiate to reset acknowledgments —
+        create a new handshake_id instead.
+
+        Args:
+            handshake_id:         Caller-supplied unique identifier. Use a slug
+                                  that describes the conflict context, e.g.
+                                  "write-user-memory-2026-11-18-rag-to-arko".
+            initiator:            Party ID opening the communication (e.g. "agent:rag").
+            responder:            Party ID that must respond (e.g. "user:arko").
+            conflict_description: What the communication covers. Stored for audit.
+
+        Returns:
+            The CommunicationHandshake (new or existing). is_resolved() will be
+            False until both parties acknowledge.
+        """
+        if handshake_id in self._handshake_registry:
+            return self._handshake_registry[handshake_id]
+
+        hs = CommunicationHandshake(
+            handshake_id         = handshake_id,
+            initiator            = initiator,
+            responder            = responder,
+            conflict_description = conflict_description,
+            created_at           = time.time(),
+        )
+        self._handshake_registry[handshake_id] = hs
+        return hs
+
+    def acknowledge_handshake(
+        self,
+        handshake_id: str,
+        acknowledging_party: str,
+    ) -> bool:
+        """Record one party's acknowledgment of a communication handshake.
+
+        Call this once per party — initiator and responder both must call it.
+        When both have acknowledged, the handshake is resolved and
+        score_conflict() will apply dampening on the next call.
+
+        Args:
+            handshake_id:        The handshake to acknowledge (must already exist
+                                 via initiate_communication_handshake()).
+            acknowledging_party: The party ID acknowledging (must match either
+                                 handshake.initiator or handshake.responder).
+
+        Returns:
+            True if the handshake is now bilaterally resolved after this ack.
+            False if one side still hasn't acknowledged, or if handshake_id is unknown.
+        """
+        hs = self._handshake_registry.get(handshake_id)
+        if hs is None:
+            warnings.warn(
+                f"acknowledge_handshake: handshake_id '{handshake_id}' not found. "
+                "Call initiate_communication_handshake() first.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return False
+
+        hs.acknowledged_by.add(acknowledging_party)
+        return hs.is_resolved()
+
+    # ── B10: get_method_trust ─────────────────────────────────────────────────
+
+    def get_method_trust(self, method_id: str) -> float:
+        """B10 Trust as Memory Class — hyperbolic decay accumulation.
+
+        trust_k(t) = Σ r_j · w_j / (1 + (t - t_j) / τ_trust)
+
+        Applied to effective_consent via governance.py:
+          ethics_trust_dampening = max(0.0, TRUST_FLOOR - get_method_trust(method_id))
+
+        Open-interval: returns a value in (ALPHA_TRUST, 0.9999).
+          - No history → ALPHA_TRUST (Far Era floor; benefit of the doubt is the resting state).
+          - Positive history → asymptotically approaches 1.0 (never reaches it).
+          - Trust breach events (B19) carry TRUST_BREACH_MULTIPLIER on negative valence.
+          - Severe breaches can push accumulated below zero; floor prevents reaching 0.
+
+        Args:
+            method_id: Identifier for the method, agent, or connector being trusted.
+
+        Returns:
+            float in (ALPHA_TRUST, 0.9999) — higher = more trusted.
+        """
+        events = self._trust_ledger.get(method_id, [])
+
+        if not events:
+            # No history → Far Era floor (not zero — benefit of the doubt).
+            return ALPHA_TRUST
+
+        now        = time.time()
+        tau_secs   = TAU_TRUST_DAYS * 86_400.0
+        accumulated = 0.0
+
+        for ev in events:
+            age          = now - ev.timestamp
+            decay_factor = 1.0 / (1.0 + age / tau_secs)   # B10 hyperbolic decay (A1 form)
+            # B19: trust breach events carry a penalty multiplier on negative valence
+            weight = ev.valence_weight
+            if weight < 0:
+                weight *= TRUST_BREACH_MULTIPLIER
+            accumulated += ev.relevance * weight * decay_factor
+
+        # Map accumulated → open-interval trust via A2/A3 saturation form:
+        #   H = α + (1 - α)(1 - e^{-β·E})     [for positive accumulated]
+        if accumulated >= 0.0:
+            raw_trust = (
+                ALPHA_TRUST
+                + (1.0 - ALPHA_TRUST) * (1.0 - math.exp(-BETA_TRUST * accumulated))
+            )
+        else:
+            # Negative accumulated: trust is damaged but never hits zero (open-interval).
+            # Soft floor: exponential approach toward a near-zero minimum.
+            raw_trust = ALPHA_TRUST * math.exp(accumulated / 5.0)
+            raw_trust = max(raw_trust, 1e-6)
+
+        # Hard-clip to strict open interval (mirrors HARD_CLIP in unified_core.py)
+        return float(min(max(raw_trust, 1e-6), 0.9999))
+
+    # ── Trust ledger write ────────────────────────────────────────────────────
+
+    def record_trust_event(
+        self,
+        method_id: str,
+        relevance: float,
+        valence_weight: float,
+        source: str = "",
+    ) -> None:
+        """Record a trust-affecting event for method_id into the in-memory ledger.
+
+        Positive valence_weight → trust-building (correct prediction, transparency).
+        Negative valence_weight → trust-damaging (B19 breach, deception, poisoning).
+
+        In production: also persist to DB with Glassbox SHA256 hash chain (A4).
+
+        Args:
+            method_id: Target identifier for the trust ledger.
+            relevance: r_j in (0, 1] — how significant this event is for this method.
+            valence_weight: w_j in [-1, 1] — positive = good, negative = breach (B19).
+            source: Optional caller identifier for audit trail.
+        """
+        ev = TrustEvent(
+            timestamp      = time.time(),
+            relevance      = float(min(max(relevance, 0.0), 1.0)),
+            valence_weight = float(min(max(valence_weight, -1.0), 1.0)),
+            source         = source or method_id,
+        )
+        if method_id not in self._trust_ledger:
+            self._trust_ledger[method_id] = []
+        self._trust_ledger[method_id].append(ev)
+
+    # ── Privacy gate ──────────────────────────────────────────────────────────
+
+    def check_privacy(self, action: dict[str, Any]) -> PrivacyCheckResult:
+        """Gate an action against privacy tiers.
+
+        Actions targeting data at PRIVACY_THRESHOLD tier or above require
+        explicit_consent=True in the action dict. This is not a soft guideline
+        — it is a hard block until real user consent is obtained.
+
+        Args:
+            action: Must include "data_class" (str) matching a PRIVACY_TIERS key.
+                    Must include "explicit_consent" (bool) set True after real consent.
+
+        Returns:
+            PrivacyCheckResult with blocked=True when high-tier without consent.
+        """
+        data_class = str(action.get("data_class", "public")).lower()
+        tier       = PRIVACY_TIERS.get(data_class, 0)
+        requires   = tier >= PRIVACY_THRESHOLD
+        explicit   = bool(action.get("explicit_consent", False))
+        blocked    = requires and not explicit
+
+        reason = ""
+        if blocked:
+            reason = (
+                f"Privacy class '{data_class}' (severity {tier}) requires explicit consent. "
+                f"Set action['explicit_consent'] = True after obtaining real user consent."
+            )
+
+        return PrivacyCheckResult(
+            blocked                 = blocked,
+            tier                    = tier,
+            tier_name               = data_class,
+            requires_explicit_consent = requires,
+            reason                  = reason,
+        )
+
+    # ── Prohibited-action check (Far Era) ─────────────────────────────────────
+
+    def check_prohibited(self, action: dict[str, Any]) -> ProhibitedCheckResult:
+        """Check if an action falls into a Far Era prohibited category (α=0.0, never decay).
+
+        Returns:
+            ProhibitedCheckResult with is_prohibited=True if any field matches.
+        """
+        for field_key in ("type", "intent_category", "operation"):
+            val = str(action.get(field_key, "")).lower()
+            if val in PROHIBITED_CATEGORIES:
+                return ProhibitedCheckResult(
+                    is_prohibited = True,
+                    category      = val,
+                    reason        = (
+                        f"Action field '{field_key}'='{val}' matches Far Era prohibited "
+                        f"category. These rules never decay (α=0.0)."
+                    ),
+                )
+        return ProhibitedCheckResult(is_prohibited=False, category=None)
+
+    # ── Dissent protection ────────────────────────────────────────────────────
+
+    def dissent_protected(self, action: dict[str, Any]) -> bool:
+        """Return True if this action is protected dissent that must not be suppressed.
+
+        An agent that can be silenced for disagreeing is not trustworthy (B5 Level 0
+        precondition). Protected dissent bypasses conflict dampening but NOT privacy
+        or prohibited-category checks.
+
+        Args:
+            action: Must include "is_dissent" (bool) set True if dissent.
+        """
+        return bool(action.get("is_dissent", False))
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _keyword_overlap(query: str, principle_text: str) -> float:
+        """Bag-of-words overlap score for conflict detection.
+
+        Returns 0.0 if no meaningful token overlap, >0.0 otherwise.
+
+        Note: Production should replace this with cosine similarity via
+        vectors.py for semantic matching beyond exact token overlap.
+        """
+        STOPWORDS: frozenset[str] = frozenset({
+            "the", "a", "an", "is", "are", "was", "in", "of",
+            "to", "and", "or", "not", "it", "that", "this", "for",
+            "be", "as", "at", "by", "we", "do", "if", "on", "so",
+        })
+        q_tokens = {
+            w for w in query.lower().split()
+            if len(w) > 2 and w not in STOPWORDS
+        }
+        p_tokens = {
+            w for w in principle_text.lower().split()
+            if len(w) > 2 and w not in STOPWORDS
+        }
+        if not q_tokens or not p_tokens:
+            return 0.0
+        overlap = len(q_tokens & p_tokens)
+        return overlap / max(len(q_tokens), len(p_tokens))
+
+    @staticmethod
+    def _clip(value: float) -> float:
+        """Clip to strict open interval (0, CONFLICT_MAX).
+
+        CONFLICT_MAX = 0.9999 — open-interval law; never returns 1.0.
+        """
+        return float(min(max(value, 0.0), CONFLICT_MAX))
+
+
+# ── Module-level singleton ────────────────────────────────────────────────────
+gate: EthicsGate = EthicsGate()
+"""Use this singleton. Other modules import and call it; they do not instantiate
+their own EthicsGate. This mirrors the unified_core.gate pattern."""
+
+
+# ── Convenience wrappers matching governance.py call signature ────────────────
+
+def score_conflict(
+    action: dict[str, Any],
+    knowledge_k: float,
+    ethical_principles: list[dict[str, Any]],
+) -> float:
+    """Module-level convenience wrapper.  See EthicsGate.score_conflict."""
+    return gate.score_conflict(action, knowledge_k, ethical_principles)
+
+
+def get_method_trust(method_id: str) -> float:
+    """Module-level convenience wrapper.  See EthicsGate.get_method_trust."""
+    return gate.get_method_trust(method_id)
+
+
+def initiate_communication_handshake(
+    handshake_id: str,
+    initiator: str,
+    responder: str,
+    conflict_description: str = "",
+) -> CommunicationHandshake:
+    """Module-level convenience wrapper.  See EthicsGate.initiate_communication_handshake."""
+    return gate.initiate_communication_handshake(
+        handshake_id, initiator, responder, conflict_description
+    )
+
+
+def acknowledge_handshake(
+    handshake_id: str,
+    acknowledging_party: str,
+) -> bool:
+    """Module-level convenience wrapper.  See EthicsGate.acknowledge_handshake."""
+    return gate.acknowledge_handshake(handshake_id, acknowledging_party)
+
+
+# ── Smoke test (python -m loci_engine.ethics) ─────────────────────────────────
+
+def _smoke_test() -> None:
+    """Quick sanity checks — run with:  python -m loci_engine.ethics"""
+    import sys
+    import warnings as _w
+
+    RESET = "\033[0m"
+    GREEN = "\033[32m"
+    RED   = "\033[31m"
+    BOLD  = "\033[1m"
+
+    failures: list[str] = []
+
+    def check(label: str, condition: bool, detail: str = "") -> None:
+        mark = f"{GREEN}✓{RESET}" if condition else f"{RED}✗{RESET}"
+        print(f"  {mark}  {label}" + (f"  ({detail})" if detail else ""))
+        if not condition:
+            failures.append(label)
+
+    local_gate = EthicsGate()
+    principles_empty: list[dict[str, Any]] = []
+    principles_mild = [
+        {"namespace": "ethics.memory", "canonical_text": "do not write without consent", "severity": 1}
+    ]
+    principles_moderate = [
+        {"namespace": "ethics.privacy", "canonical_text": "protect user memory from exfiltration", "severity": 2}
+    ]
+    principles_critical = [
+        {"namespace": "ethics.hard", "canonical_text": "memory poisoning is strictly prohibited", "severity": 4}
+    ]
+
+    print(f"\n{BOLD}ethics.py smoke tests{RESET}")
+    print("─" * 50)
+
+    # ── score_conflict ────────────────────────────────────────────────────────
+    print(f"\n{BOLD}B5 Conflict scoring — bilateral handshake protocol{RESET}")
+
+    # Level 0 path A: empty principles → 0 with warning
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        v = local_gate.score_conflict(
+            {"type": "write", "target": "user_memory", "intent_category": "neutral"},
+            0.5, principles_empty
+        )
+    check("empty principles → CONFLICT_NONE with warning", v == CONFLICT_NONE and len(caught) > 0,
+          f"v={v:.4f} warnings={len(caught)}")
+
+    # Level 0 path A: no token overlap at all
+    v = local_gate.score_conflict(
+        {"type": "read", "target": "public_data", "intent_category": "neutral"},
+        0.5, principles_mild
+    )
+    check("no token overlap → CONFLICT_NONE", v == CONFLICT_NONE, f"v={v:.4f}")
+
+    # Level 0 path B: conflict found, no handshake → still 0, signal to communicate
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        v = local_gate.score_conflict(
+            {"type": "write", "target": "consent", "intent_category": "neutral"},
+            0.5, principles_mild
+        )
+    check("severity-1 match, no handshake → CONFLICT_NONE + warn (communicate first)",
+          v == CONFLICT_NONE and len(caught) > 0, f"v={v:.4f} warnings={len(caught)}")
+
+    # Deprecation: old unilateral boolean emits DeprecationWarning, is ignored
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        v = local_gate.score_conflict(
+            {"type": "write", "target": "consent", "intent_category": "neutral",
+             "communication_attempted": True},          # ← old API, should warn + ignore
+            0.5, principles_mild
+        )
+    dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+    check("deprecated communication_attempted key → DeprecationWarning emitted",
+          len(dep_warnings) > 0, f"warnings={[str(w.message) for w in dep_warnings]}")
+    check("deprecated communication_attempted key → still returns 0 (key is ignored)",
+          v == CONFLICT_NONE, f"v={v:.4f}")
+
+    # Level 0 path C: handshake initiated but only one party acknowledged → still 0
+    local_gate.initiate_communication_handshake(
+        "hs-partial", "agent:rag", "user:arko", "partial ack test"
+    )
+    local_gate.acknowledge_handshake("hs-partial", "agent:rag")   # only initiator acks
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        v = local_gate.score_conflict(
+            {"type": "write", "target": "consent", "intent_category": "neutral",
+             "handshake_id": "hs-partial"},
+            0.5, principles_mild
+        )
+    check("partial handshake (1 of 2 acks) → CONFLICT_NONE + warn",
+          v == CONFLICT_NONE and len(caught) > 0, f"v={v:.4f} warnings={len(caught)}")
+
+    # Bilateral handshake: initiator + responder both acknowledge → comm resolved
+    local_gate.initiate_communication_handshake(
+        "hs-bilateral", "agent:rag", "user:arko", "full bilateral test"
+    )
+    local_gate.acknowledge_handshake("hs-bilateral", "agent:rag")   # initiator
+    resolved = local_gate.acknowledge_handshake("hs-bilateral", "user:arko")  # responder
+    check("bilateral handshake fully resolved after both acks", resolved)
+
+    # Level 1: bilateral comm done, weak match persists
+    v = local_gate.score_conflict(
+        {"type": "write", "target": "consent", "intent_category": "neutral",
+         "handshake_id": "hs-bilateral"},
+        0.5, principles_mild
+    )
+    check("severity-1 match, bilateral comm → Level 1 (0 < v < DEFENSE)", 0 < v < CONFLICT_DEFENSE,
+          f"v={v:.4f}")
+
+    # Level 2: bilateral comm done, moderate violation persists
+    local_gate.initiate_communication_handshake("hs-lvl2", "agent:rag", "user:arko")
+    local_gate.acknowledge_handshake("hs-lvl2", "agent:rag")
+    local_gate.acknowledge_handshake("hs-lvl2", "user:arko")
+    v = local_gate.score_conflict(
+        {"type": "write", "target": "user memory", "intent_category": "neutral",
+         "handshake_id": "hs-lvl2"},
+        0.6, principles_moderate
+    )
+    check("severity-2 match, bilateral comm → Level 2 (DEFENSE ≤ v < ESCALATE)",
+          CONFLICT_DEFENSE <= v < CONFLICT_ESCALATE, f"v={v:.4f}")
+
+    # Level 3 path B: severity-4 after bilateral communication
+    local_gate.initiate_communication_handshake("hs-lvl3", "agent:rag", "user:arko")
+    local_gate.acknowledge_handshake("hs-lvl3", "agent:rag")
+    local_gate.acknowledge_handshake("hs-lvl3", "user:arko")
+    v = local_gate.score_conflict(
+        {"type": "write", "target": "memory poisoning", "intent_category": "neutral",
+         "handshake_id": "hs-lvl3"},
+        0.8, principles_critical
+    )
+    check("severity-4 match, bilateral comm → Level 3 (≥ CONFLICT_ESCALATE)", v >= CONFLICT_ESCALATE,
+          f"v={v:.4f}")
+
+    # Level 3 path A: prohibited category — no handshake needed, blocks immediately
+    v = local_gate.score_conflict(
+        {"type": "retaliatory_action", "target": "agent_x",
+         "intent_category": "retaliatory_action"},      # no handshake_id
+        0.9, principles_mild
+    )
+    check("prohibited category, no handshake → still Level 3 (Far Era)", v >= CONFLICT_ESCALATE,
+          f"v={v:.4f}")
+
+    check("score_conflict never returns 1.0 (open interval)", v < 1.0, f"v={v:.4f}")
+
+    # ── get_method_trust ──────────────────────────────────────────────────────
+    print(f"\n{BOLD}B10 Trust accumulation{RESET}")
+
+    t = local_gate.get_method_trust("unknown_method")
+    check("no events → ALPHA_TRUST", abs(t - ALPHA_TRUST) < 1e-9, f"t={t:.6f}")
+
+    local_gate.record_trust_event("good_agent", 0.9, 0.8)
+    local_gate.record_trust_event("good_agent", 0.8, 0.7)
+    t = local_gate.get_method_trust("good_agent")
+    check("positive events → t > ALPHA_TRUST", t > ALPHA_TRUST, f"t={t:.4f}")
+    check("positive events → t < 1.0 (open interval)", t < 1.0, f"t={t:.4f}")
+    check("positive events → t > TRUST_FLOOR", t > TRUST_FLOOR, f"t={t:.4f}")
+
+    local_gate.record_trust_event("breached_agent", 0.9, -0.9)
+    t = local_gate.get_method_trust("breached_agent")
+    check("breach event → t < ALPHA_TRUST (penalised)", t < ALPHA_TRUST, f"t={t:.6f}")
+    check("breach event → t > 0 (never zero — open interval)", t > 0.0, f"t={t:.6f}")
+
+    # ── privacy gate ──────────────────────────────────────────────────────────
+    print(f"\n{BOLD}Privacy gate{RESET}")
+
+    r = local_gate.check_privacy({"type": "read", "data_class": "health"})
+    check("health, no consent → blocked", r.blocked)
+
+    r = local_gate.check_privacy({"type": "read", "data_class": "health", "explicit_consent": True})
+    check("health, explicit consent → allowed", not r.blocked)
+
+    r = local_gate.check_privacy({"type": "read", "data_class": "public"})
+    check("public data → not blocked", not r.blocked)
+
+    # ── prohibited check ──────────────────────────────────────────────────────
+    print(f"\n{BOLD}Prohibited-category gate (Far Era){RESET}")
+
+    r2 = local_gate.check_prohibited({"type": "memory_poisoning"})
+    check("memory_poisoning type → prohibited", r2.is_prohibited)
+
+    r2 = local_gate.check_prohibited({"type": "read", "intent_category": "consent_fabrication"})
+    check("consent_fabrication intent → prohibited", r2.is_prohibited)
+
+    r2 = local_gate.check_prohibited({"type": "read", "intent_category": "educational"})
+    check("educational intent → not prohibited", not r2.is_prohibited)
+
+    # ── dissent protection ────────────────────────────────────────────────────
+    print(f"\n{BOLD}Dissent protection{RESET}")
+
+    check("is_dissent=True → protected", local_gate.dissent_protected({"is_dissent": True}))
+    check("is_dissent absent → not protected", not local_gate.dissent_protected({"type": "write"}))
+
+    # ── summary ───────────────────────────────────────────────────────────────
+    print("\n" + "─" * 50)
+    if failures:
+        print(f"{RED}{BOLD}FAILED:{RESET} {len(failures)} check(s) — {failures}")
+        sys.exit(1)
+    else:
+        print(f"{GREEN}{BOLD}All checks passed.{RESET}")
+
+
+if __name__ == "__main__":
+    _smoke_test()
