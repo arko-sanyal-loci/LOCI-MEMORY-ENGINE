@@ -23,18 +23,16 @@ unrelated — see "Repo landscape" below._
 - `docs` — not LOCI at all, an untouched fork of `github/docs`. Clutter, not debt.
 - `arkosanyal/loci-engine` (different account) — intentional prior-art timestamp (Jul 2), not drift.
 
-## Blocked on
+## Pushed (2026-11-18, after GitHub was connected)
+1. EthicsGate/CommunicationHandshake patch
+2. `mac-install/` rescue (83 files)
+3. `coordination_bus/` merge
+4. Archive redirects pushed to the 4 now-redundant repos: `loci-card`, `loci-card-paper` (→ `loci-card-papers`), `LOCI-Coordinate-BUS`, `loci-coordination-bus` (→ `LOCI-MEMORY-ENGINE`)
 
-**GitHub isn't connected to this session at all.** `add_repo` confirms no account is linked (separate from the earlier PAT/revoke issue). Until Arko connects GitHub in claude.ai Settings → Connectors, nothing can be pushed — not the EthicsGate patch, not this merge, not the archive-redirects for the dead repos. Everything below "ready to push" is sitting as local commits only.
-
-## Ready to push (once GitHub is connected)
-1. EthicsGate/CommunicationHandshake patch (from before this session)
-2. `mac-install/` rescue (2 commits)
-3. `coordination_bus/` merge (this commit)
+All of the org's LOCI repos now point to exactly one canonical place: this repo.
 
 ## Not yet done
 - Reorganize `mac-install/` so its scripts actually integrate with `loci_engine/` rather than sitting as a flat copy (check for overlap/conflict between e.g. `mac-install/scripts/ethics_filter.py` and `loci_engine/ethics.py`)
 - Install `fastmcp` in a real deployment environment to get coordination_bus's MCP server test green
 - Clean up root-level patch-file/script clutter
-- Archive the now-redundant `loci-coordination-bus`/`LOCI-Coordinate-BUS` repos on GitHub (needs push access)
 - Future, explicitly deferred: Glass Box Compendium integration (multi-agent perspective resolution via coordination_bus + the heat/stream tie-break mechanism validated earlier today against real session data)
