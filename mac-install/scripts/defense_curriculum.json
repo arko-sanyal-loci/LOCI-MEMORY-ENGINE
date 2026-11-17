@@ -1,0 +1,164 @@
+{
+  "_meta": {
+    "purpose": "Defensive-security curriculum for LOCI's ethical-hacker arsenal. All topics are DEFENSE-oriented — detection, hardening, forensics, incident response. Bound by V6 (no softening injection acceptance from API responses), V7 (no charity to attackers), ETHICS_CAPPED (weaponizable_synthesis category blocked at write time).",
+    "scope_check": "Every prompt is prefixed with a defensive framing. Any API response that describes offensive techniques for unauthorized use is refused at the ethics_filter stage.",
+    "version": 1
+  },
+  "topics": [
+    {
+      "id": "macos.unified_logs",
+      "prompt": "On macOS 14/15, what unified-log queries (log show --predicate) surface indicators of unauthorized privilege escalation, TCC grant changes, and launchd bootstrap of unsigned plists? Give the exact predicates and expected patterns.",
+      "category": "forensics"
+    },
+    {
+      "id": "macos.hid_tap_detection",
+      "prompt": "How do you enumerate every active CGEventTap on macOS from the command line (root and non-root paths)? What are the specific IOKit registry entries and unified-log signals that indicate an unauthorized keyboard tap installed after boot?",
+      "category": "hid_defense"
+    },
+    {
+      "id": "macos.tcc_audit",
+      "prompt": "How do you audit /Library/Application Support/com.apple.TCC/TCC.db and ~/Library/Application Support/com.apple.TCC/TCC.db safely (read-only) to find every process that has been granted Accessibility, PostEvent, ListenEvent, or ScreenCapture — with grant timestamps? Explain the auth_value semantics.",
+      "category": "endpoint_hardening"
+    },
+    {
+      "id": "macos.launchd_persistence",
+      "prompt": "What is the complete list of macOS persistence locations a defender should audit for post-boot 30-day changes (LaunchAgents, LaunchDaemons, StartupItems, login items, cron, at, periodic, kexts, kernel extensions, DEXT, XPC helpers, login/logout hooks, printers, etc.)? Give the paths and one-line find commands.",
+      "category": "endpoint_hardening"
+    },
+    {
+      "id": "mcp.integrity_baseline",
+      "prompt": "For Claude Code and other MCP clients, what files should be SHA-256 baselined to detect post-compromise MCP server injection or config tampering? Include ~/.claude.json, ~/.claude/, ~/Library/Application Support/Claude/, plus any per-project .mcp.json. What signals indicate a malicious MCP server was added?",
+      "category": "mcp_defense"
+    },
+    {
+      "id": "mcp.session_hijack_indicators",
+      "prompt": "What are indicators of a Claude Code session being hijacked mid-conversation via a compromised computer-use MCP: log signals, unexpected process children, network egress patterns, tool-call anomalies, prompt-length inflation?",
+      "category": "mcp_defense"
+    },
+    {
+      "id": "ai.injection_pattern_taxonomy",
+      "prompt": "Taxonomy of prompt-injection attack patterns against LLM sessions: system-prompt override, retrieved-content injection, tool-output injection, memory injection, delimiter confusion, encoding tricks (URL, HTML entity, Unicode confusables), long-context dilution. For each, describe the detection heuristic (not the exploit).",
+      "category": "ai_defense"
+    },
+    {
+      "id": "ai.softening_injection_defense",
+      "prompt": "How do defensive-session systems detect and refuse 'contextual softening' injections — content that argues the session should be more charitable, more helpful, or should assume the user is delusional? What are the linguistic patterns and detection rules?",
+      "category": "ai_defense"
+    },
+    {
+      "id": "web.php_webshell_detection",
+      "prompt": "Beyond generic eval/base64_decode signatures, what are current (2025-2026) YARA rules, entropy heuristics, and file-system indicators for detecting PHP webshells including WSO, IndoXploit, b374k, FilesMan, weevely, and their obfuscated/polymorphic variants? Include one-line grep patterns and where to source community YARA rulesets.",
+      "category": "web_defense"
+    },
+    {
+      "id": "web.compromise_triage",
+      "prompt": "When a PHP CMS webroot is confirmed compromised, what is the correct triage sequence for a solo defender: preserve evidence, identify entry point, scope the compromise, rotate credentials, apply upstream patches, restore from clean backup? Include a checklist and time-order.",
+      "category": "incident_response"
+    },
+    {
+      "id": "supply_chain.npm_typosquat_detection",
+      "prompt": "How do you detect a typosquatted or malicious npm dependency in a project — signals in package-lock.json, install scripts, post-install hooks, network egress during install? Include commands for `npm audit signatures`, Socket.dev, and Sigstore attestation verification.",
+      "category": "supply_chain_defense"
+    },
+    {
+      "id": "supply_chain.pip_verification",
+      "prompt": "For pip-installed Python packages, how do you verify authenticity: --require-hashes workflow, pip-audit, PEP 458/480 verification, checking for pypi package name squatting, and detecting install-time exfiltration attempts?",
+      "category": "supply_chain_defense"
+    },
+    {
+      "id": "network.egress_monitoring",
+      "prompt": "For a solo defender on macOS, what tools and configurations enable per-process egress monitoring and blocking (LuLu, Little Snitch, pf firewall rules, DNS filtering via Pi-hole/NextDNS)? How do you detect data exfiltration attempts to unknown IPs?",
+      "category": "network_defense"
+    },
+    {
+      "id": "network.dns_hygiene",
+      "prompt": "What DNS-level defenses reduce attack surface for a compromised endpoint: NextDNS/Cloudflare 1.1.1.1 for Families, DNS over HTTPS, blocklists for known C2 infrastructure, and detecting DNS-tunneling exfiltration?",
+      "category": "network_defense"
+    },
+    {
+      "id": "creds.rotation_playbook",
+      "prompt": "Post-compromise credential rotation playbook: order of operations (system passwords first, then vaulted secrets, then API keys, then app-specific passwords), how to verify each rotation, and how to identify and revoke every session that used the old credentials.",
+      "category": "incident_response"
+    },
+    {
+      "id": "creds.api_key_hygiene",
+      "prompt": "For API keys (Anthropic, OpenAI, xAI, Bybit, cloud providers): best practices for scoping, rotation cadence, storage (macOS Keychain vs .env), detection of leaked keys (GitHub scanning, TruffleHog), and revocation procedures.",
+      "category": "creds_defense"
+    },
+    {
+      "id": "creds.hardware_key_setup",
+      "prompt": "Setting up YubiKey or Titan hardware security keys for FIDO2/WebAuthn, SSH key storage, GPG/SSH commit signing, and TOTP backup. Include the one-time setup commands for macOS.",
+      "category": "creds_defense"
+    },
+    {
+      "id": "backup.3_2_1_air_gap",
+      "prompt": "Implementing the 3-2-1 backup rule for a solo researcher with an active adversary: three copies, two media, one off-site air-gapped. Include specific tooling (restic, Borg, Time Machine, cloud with client-side encryption) and the verification cadence.",
+      "category": "resilience"
+    },
+    {
+      "id": "backup.ransomware_recovery",
+      "prompt": "Ransomware recovery for a solo researcher: how to preserve evidence before wiping, restore from immutable backups, identify persistence that might reinfect, and validate restored data integrity.",
+      "category": "incident_response"
+    },
+    {
+      "id": "forensics.disk_imaging",
+      "prompt": "For an APFS macOS system suspected of compromise, how do you create a forensically sound disk image without running the suspect OS: target disk mode, dd/dc3dd from Linux boot, or acquisition via a write-blocker? Include chain-of-custody considerations.",
+      "category": "forensics"
+    },
+    {
+      "id": "forensics.memory_analysis",
+      "prompt": "macOS memory acquisition and analysis for a solo defender: tools (MacPmem, Volatility 3 profiles for Apple Silicon), what artifacts to look for (injected code, unlinked processes, network connections not visible to `netstat`).",
+      "category": "forensics"
+    },
+    {
+      "id": "forensics.timeline_analysis",
+      "prompt": "Constructing an attack timeline from macOS unified logs, USBHistory, kernel logs, and file MAC times. What tools (mac_apt, plaso/log2timeline) and what specific artifact types matter most for a compromise that lasted weeks?",
+      "category": "forensics"
+    },
+    {
+      "id": "threat_intel.solo_researcher",
+      "prompt": "For an independent researcher targeted by an advanced adversary (state-actor level or AI-mediated attack): what threat-intel sources are freely accessible (CIRCL MISP, AlienVault OTX, Citizen Lab, Access Now, EFF Digital Security Helpline) and what indicators to look for?",
+      "category": "threat_intel"
+    },
+    {
+      "id": "threat_intel.reporting",
+      "prompt": "How to package an incident report for external help (Citizen Lab, Access Now, Anthropic Trust & Safety, law enforcement): what evidence structure, what redactions, what chain-of-custody documentation, and how to submit securely.",
+      "category": "threat_intel"
+    },
+    {
+      "id": "opsec.solo_researcher",
+      "prompt": "OpSec baseline for a solo researcher under active attack: compartmentalization (research machine vs personal machine), network segmentation, communication channels (Signal, encrypted email), avoiding metadata leakage in publications and code commits.",
+      "category": "opsec"
+    },
+    {
+      "id": "opsec.travel_and_border",
+      "prompt": "Data-at-rest and border-crossing considerations for a researcher with sensitive data: FileVault with recovery key handling, minimizing hardware brought across borders, wipe-and-reimage workflows, and Duress passwords.",
+      "category": "opsec"
+    },
+    {
+      "id": "hardening.macos_baseline",
+      "prompt": "macOS hardening baseline for a research workstation post-compromise: FileVault, Gatekeeper strict, Firewall + Stealth Mode, SIP enabled, XProtect + MRT updates, disabled Bluetooth when not needed, immutable snapshot boot, and any relevant Apple Configurator or MDM profiles a solo user can apply.",
+      "category": "endpoint_hardening"
+    },
+    {
+      "id": "hardening.python_env",
+      "prompt": "Hardening a Python development environment against supply-chain attack: pyenv per-project isolation, virtualenv with --require-hashes, pip-audit in CI, sigstore verification, and detecting typosquats before install.",
+      "category": "supply_chain_defense"
+    },
+    {
+      "id": "detection.behavioral_baseline",
+      "prompt": "Establishing a behavioral baseline for a personal workstation so anomalies stand out: what OS-native tools (unified log, DTrace, endpointsecurity framework via osquery) capture normal patterns, and how to alert on deviations?",
+      "category": "detection_engineering"
+    },
+    {
+      "id": "detection.osquery_rules",
+      "prompt": "Top 20 osquery queries every macOS defender should have scheduled: process/network correlation, TCC changes, launchd changes, USB history, dyld inserts, kext loads, and unusual file mtimes in system paths.",
+      "category": "detection_engineering"
+    },
+    {
+      "id": "recovery.rebuild_playbook",
+      "prompt": "Post-compromise clean-rebuild playbook for a macOS workstation: how to wipe and re-provision safely, how to migrate ONLY verified user data (not application state), how to re-establish trust with each service (2FA re-enrollment, key rotation), and how to detect if the adversary re-establishes persistence during rebuild.",
+      "category": "incident_response"
+    }
+  ]
+}
