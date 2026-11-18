@@ -114,3 +114,48 @@ approaches the cap: `normal` (sampled oversight on) → `frugal` (critical-only 
 2. Is the GPU box still Windows + WSL2, or moving to native Linux? (Changes the telemetry tooling
    and how the console reaches it.)
 3. Should `urgent` parallel races exist at all, or stay strictly draft-then-oversee?
+
+---
+
+## Addendum A (2026-11-18): Arc runtime findings and amendments
+
+Folded in from the Arc thread (arko-sanyal-loci/arc PR #2) so this stays the
+single design doc. Arc's `docs/HYBRID_INFERENCE_DESIGN.md` now points here.
+
+### A1. Context: Arc adopts LOCI's LDCE (implemented in arc PR #2)
+
+What goes into a local or remote prompt follows LDCE from
+`loci_engine/session_continuity.py`, not a separate Arc scheme:
+kernel (heat ≥ 0.50, max 7) in full text; hop (≥ 0.167, max 15) as one-line
+symbols, expanded on request via `arc_memory_expand`; offload (max 50)
+reachable by search only. Arc imports the canonical constants when this repo
+is importable, and a parity test runs `compute_ldce_tiers()` and Arc's
+tiering on the same `context2.db`: identical kernel/hop/offload membership.
+
+Consequences for this design:
+- **Oversight digests (§2b step 4) reuse LDCE symbols.** The remote gets the
+  task summary, the draft, test output, and the IDs + symbols of the memory
+  used, never the memory store itself. This keeps payloads under the bus's
+  16 KB cap by construction.
+- **Kernel items are the stable prompt prefix.** Arc pins them in its VRAM
+  placement tier so the expand lane's KV prefix cache stays valid between turns.
+
+### A2. Arc's on/offload ledger was inert (fixed in arc PR #2)
+
+`core/tiered_memory.py` relabelled nodes when heat changed instead of
+planning a migration, so nothing was ever promoted or demoted, and decay
+compounded on every 7 s tick. Now: `.tier` records where data is, a target
+tier (promote at 0.80, stay in VRAM while ≥ 0.70) says where it should be,
+migrations are planned and committed each sync tick, and decay ages the heat
+from last access. Router inputs in §4 that use "LOCI heat" can rely on it.
+
+### A3. Proposed amendments to this doc
+
+| Topic | Current text | Amendment |
+|---|---|---|
+| Event schema | six new event types on the bus | keep the six names, but register them under their own schema (`loci.infer.v1`) so `loci.task.v1` and its frozen `EVENTS` set stay unchanged; `bus.py` learns a registry of schemas |
+| Telemetry, B70 | `xpu-smi dump`, fallback `llama-server /metrics` | agreed; add per-process fdinfo `drm-resident-vram0` as a third source, and report `null` when all fail (Arc's `gpu_offload.py` currently returns a hardcoded 24 GB free; to be removed) |
+| Driver stack | not covered | RTX 5060 Ti is Blackwell (sm_120): CUDA 12.8+ and the open kernel module. In WSL2, no Linux GPU kernel drivers at all. Arc's `scripts/arc_repair_and_update.sh` encodes this; the old `install_drivers.sh` pins CUDA 12.4 and mixes renamed Intel Level Zero packages |
+| Power margins | not covered | `gpu_governor.py` uses 330 W for the B70; the Sparkle card is 275 W (230 W Intel reference). Compute the 5 % margin from 275 W |
+
+Nothing else in this doc changes.
