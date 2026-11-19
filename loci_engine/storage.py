@@ -107,6 +107,11 @@ END;
 class StorageEngine:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
+        # The default lives under ~/loci-memory-engine/, which may not exist on a
+        # fresh machine; sqlite then fails with "unable to open database file".
+        parent = os.path.dirname(os.path.abspath(db_path))
+        if db_path != ":memory:" and parent:
+            os.makedirs(parent, exist_ok=True)
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:

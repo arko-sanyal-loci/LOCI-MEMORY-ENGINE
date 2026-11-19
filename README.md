@@ -1,12 +1,35 @@
-# loci-memory-engine
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/billo-tech-logo-dark.svg">
+  <img alt="Billo Tech" src="brand/billo-tech-logo-light.svg" width="480">
+</picture>
+
+</div>
+
+# LOCI Memory Engine
 
 **Longitudinal Observation and Compression Interface**
 **Locality-Optimized Contextual Intelligence**
 
 A heat-tiered, goal-conditioned persistent memory substrate for long-horizon AI agents — built by Billo Tech.
 
-> **This is the canonical repository.** All prior forks and experimental branches have been consolidated here.
-> See [`AUTHORS.md`](AUTHORS.md) for full credits and [`PAPERS.md`](PAPERS.md) for the research publications.
+> **This is the canonical repository for the LOCI engine.** Earlier copies (`loci-memory-engine-1`,
+> `loci-coordination-bus`, `LOCI-Coordinate-BUS`) are read-only redirects to here.
+> See [`AUTHORS.md`](AUTHORS.md) for credits and [`PAPERS.md`](PAPERS.md) for the research.
+
+## Where this fits in LOCI
+
+| Repository | Role |
+|---|---|
+| **LOCI-MEMORY-ENGINE** (this repo) | The engine: heat-tiered memory, CARD recall, the Glassbox ledger, ethics gate, coordination bus |
+| [arc](https://github.com/arko-sanyal-loci/arc) | Local runtime and LOCI co-author: runs models on your GPUs with this engine as memory |
+| [loci-card-papers](https://github.com/arko-sanyal-loci/loci-card-papers) | The published LOCI / CARD papers the code implements |
+
+Individual modules connect and unify under **The Glassbox**, the shared, transparent knowledge
+compendium that every agent and model can read from and contribute to.
+
+New here? Start with the [user guide](docs/USER_GUIDE.md).
 
 ---
 
@@ -100,7 +123,7 @@ LOCI gives AI agents persistent memory that behaves like a thermodynamic system:
 | `loci_engine/slp_arena.py` | SymLinkPrev arena — Host RAM tier management | 09 |
 | `loci_engine/sovereign_bridge.py` | Cross-agent trust bridge | — |
 | `loci_engine/store.py` | Entity + fact store (simpler facade over storage) | 09 |
-| `loci_engine/thermal_gradient.py` | Multi-node heat gradient propagation | — |
+| `loci_engine/thermal_gradient.py` | Gaussian heat-gradient diffusion (not yet wired in; uses its own 0.70 / 0.25 tier cut-offs, see [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md#heat-thresholds)) | — |
 | `loci_engine/threads.py` | Thread-safe memory access primitives | — |
 | `rag/` | Ollama-based document ingestion + CARD-categorized RAG pipeline | 04 |
 
@@ -171,14 +194,18 @@ Queries are classified into one of four archetypes, each with a tuned recall dep
 
 ## Install
 
+Python 3.11 or newer. The core engine and the coordination bus use only the standard library.
+
 ```bash
-git clone https://github.com/arko-sanyal-loci/loci-memory-engine
-cd loci-memory-engine
+git clone https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE
+cd LOCI-MEMORY-ENGINE
 python3 -m venv .venv
-.venv/bin/pip install -e .
+.venv/bin/pip install -e .            # core engine
+.venv/bin/pip install -e '.[mcp]'     # + coordination-bus MCP server
+.venv/bin/pip install -e '.[bridge]'  # + HTTP bridge (FastAPI)
 ```
 
-**Optional — RAG pipeline** (requires [Ollama](https://ollama.com)):
+**Optional: RAG pipeline** (needs [Ollama](https://ollama.com)):
 ```bash
 .venv/bin/pip install -e '.[rag]'
 ollama pull nomic-embed-text
@@ -187,8 +214,8 @@ ollama pull llama3.2
 
 **Environment variables:**
 ```bash
-export LOCI_DB_PATH=~/loci-memory-engine/context2.db
-export LOCI_GLASSBOX_PATH=~/loci-memory-engine/glassbox_ledger.jsonl
+export LOCI_DB_PATH=~/LOCI-MEMORY-ENGINE/context2.db
+export LOCI_GLASSBOX_PATH=~/LOCI-MEMORY-ENGINE/glassbox_ledger.jsonl
 ```
 
 ---
@@ -198,11 +225,11 @@ export LOCI_GLASSBOX_PATH=~/loci-memory-engine/glassbox_ledger.jsonl
 ### Python API
 
 ```python
-from loci_engine.unified_core import LociCore
+from loci_engine.storage import StorageEngine
 
-loci = LociCore()
-loci.remember("user_gpu", "Intel Arc B70, 24GB VRAM, host: workstation-0")
-facts = loci.recall("what GPU does the user have")
+store = StorageEngine()                      # uses $LOCI_DB_PATH
+store.upsert_fact("user", "gpu", "Intel Arc B70 Pro, 32 GB")
+store.get_current_fact("user", "gpu")["canonical_text"]   # 'user.gpu = Intel Arc B70 Pro, 32 GB'
 ```
 
 ### MCP Server
@@ -211,9 +238,12 @@ facts = loci.recall("what GPU does the user have")
 LOCI_DB_PATH=./memory.db python -m loci_engine.mcp_server
 ```
 
-Exposes tools: `memory_remember`, `memory_recall`, `memory_add_fact`, `memory_get_facts`,
-`glassbox_learn`, `glassbox_recall`, `glassbox_verify_chain`, `sync_node_status`,
-`sync_anti_entropy`, `sync_add_peer`
+Exposes 33 tools in groups: memory (`memory_search_lexical`, `memory_ingest_fact`), Glassbox
+(`glassbox_learn`, `glassbox_recall`, `glassbox_verify`, `glassbox_stats`), agents
+(`agent_register`, `agent_send`, ...), sessions (`session_start`, `session_recall`, ...),
+feedback, patience, GPU (`gpu_status`, `gpu_route`, ...) and sync (`sync_node_status`,
+`sync_anti_entropy`, `sync_force`, `sync_add_peer`). The full list is in the
+[user guide](docs/USER_GUIDE.md#mcp-tools).
 
 ### Session Ingestion
 
@@ -223,8 +253,9 @@ from loci_engine.storage import StorageEngine
 
 storage = StorageEngine()
 ingester = SessionIngester(storage=storage, session_id="session_abc123")
-ingester.ingest_turn(role="user", content="I upgraded to the Arc B70")
+ingester.ingest_turn(role="user", content="I upgraded to the Arc B70 Pro, 32 GB")
 result = ingester.recall_for_query("what GPU did the user mention")
+result["archetype"], result["selected_items"][0]["canonical_text"]
 ```
 
 ### RAG Pipeline
@@ -242,13 +273,37 @@ python -m rag query "What does paper 04 say about recall depth?"
 ## Tests
 
 ```bash
-.venv/bin/pip install pytest
-pytest tests/ -q
+.venv/bin/pip install -e '.[dev,mcp,rag,bridge]'
+.venv/bin/python -m pytest -q
 ```
 
-All 145 tests pass. Test suite covers: StorageEngine, SessionIngester, CardRouter, Glassbox,
-EthicalCore, Ethics, NodeSyncDaemon, SessionContinuity, FeedbackPlatform, PatienceProtocol,
-LoopGuard, Sanitizer.
+228 tests (8 more skip unless Ollama is running), covering storage, CARD routing, the Glassbox chain, ethics, session continuity,
+node sync, the coordination bus and its MCP server, the RAG pipeline, GPU routing, the deploy manifest, and an import check of every module. CI runs the same
+command on every pull request.
+
+If you change anything in `loci_engine/`, run `scripts/ops/update_manifest.sh` and commit the new
+`manifest.sha256`. Deployed nodes compare against it (see Node Sync), and `tests/test_manifest.py`
+fails until it is current.
+
+---
+
+## Repository layout
+
+| Path | What lives there |
+|---|---|
+| `loci_engine/` | The engine package |
+| `coordination_bus/` | Secure inter-agent message bus and its MCP server |
+| `rag/` | Optional Ollama document pipeline |
+| `tests/` | All tests (`pytest`) |
+| `scripts/` | Developer scripts; `scripts/ops/` holds machine and VPS operations |
+| `systemd/` | Units for the MCP server and the sync daemon |
+| `config/`, `architecture/`, `interface/`, `benchmarks/` | Configuration, design notes, UI, benchmarks |
+| `agents/` | 32-agent workspace skeleton (see `agents/PHASES.md`) |
+| `ledger/` | Hash-chained contributor credit ledger |
+| `mac-install/` | Rescued Mac install layer, not yet integrated |
+| `brand/` | Billo Tech logo files |
+| `docs/` | User guide, repository structure, profile README |
+| `archive/` | Applied one-off patches and scripts, kept for history only |
 
 ---
 
@@ -262,6 +317,9 @@ LOCI supports multi-node operation via `NodeSyncDaemon`. Each node:
 5. Detects divergence via Merkle tree comparison
 
 ```bash
+# scripts/ops/node_sync.sh force-resets the checkout to origin/main when it drifts.
+# Run it only on deployment nodes, never on a machine where you edit code.
+
 # Start sync daemon
 systemctl start loci-sync
 
@@ -309,12 +367,11 @@ Zenodo DOI: [10.5281/zenodo.21188425](https://doi.org/10.5281/zenodo.21188425)
 See [`AUTHORS.md`](AUTHORS.md) for complete attribution.
 
 **Principal Architect:** Arko Sanyal (Billo Tech / Atlas BD)
-**Organization:** [Billo Tech](https://github.com/arko-sanyal-loci) | arko-sanyal-loci
+**Organization:** [Billo Tech](https://github.com/billo-tech) · [arko-sanyal-loci](https://github.com/arko-sanyal-loci)
 
 ---
 
 ## License
 
-See [`LICENSE.md`](LICENSE.md).
-
-© 2026 Arko Sanyal / Billo Tech. All rights reserved.
+© 2026 Arko Sanyal / Billo Tech. All rights reserved. The source is public to read and cite, not
+licensed for reuse. See [`LICENSE.md`](LICENSE.md).

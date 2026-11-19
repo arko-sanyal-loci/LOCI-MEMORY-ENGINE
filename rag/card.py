@@ -7,7 +7,7 @@ are conditioned on a query category, assigned by a rule-based keyword
 heuristic (one of the three classification options the paper allows).
 
 This module ranks knowledge_update results by real heat from
-`loci_engine.vectors.VectorStore` (recency as a tie-break when heat is
+`rag.vector_store.VectorStore` (recency as a tie-break when heat is
 equal or absent), and temporal_reasoning results by document metadata
 dates - there is still no entity co-occurrence graph or fact versioning
 consumed here beyond heat itself, so multi_session_reasoning still only

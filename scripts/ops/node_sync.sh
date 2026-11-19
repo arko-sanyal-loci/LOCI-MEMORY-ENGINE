@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKSPACE="/home/loci/loci-memory-engine"
+# WARNING: this script runs `git reset --hard` and `git clean -fd` whenever the
+# tree differs from origin/main. Only run it on deployment nodes, never on a
+# machine where you edit code.
+WORKSPACE="${LOCI_WORKSPACE:-/home/loci/loci-memory-engine}"
 cd "$WORKSPACE"
 
 # 1. Fetch remote tracking refs securely via SSH deploy key
@@ -10,8 +13,10 @@ git fetch origin main --quiet
 # 2. Extract upstream manifest hash
 REMOTE_HASH=$(git show origin/main:manifest.sha256 2>/dev/null | tr -d '[:space:]' || true)
 
-# 3. Calculate local engine tree hash
-LOCAL_HASH=$(find loci_engine -type f -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')
+# 3. Calculate local engine tree hash (same definition as update_manifest.sh)
+# shellcheck source=engine_hash.sh
+source "$WORKSPACE/scripts/ops/engine_hash.sh"
+LOCAL_HASH=$(engine_hash)
 
 # 4. Check for divergence or local working tree contamination
 DIRTY_COUNT=$(git status --porcelain | wc -l)

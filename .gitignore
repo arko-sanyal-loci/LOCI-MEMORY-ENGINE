@@ -25,3 +25,8 @@ glassbox_ledger.jsonl*
 feedback_ledger.jsonl*
 agent_registry.json
 .venv/
+
+# Packaging
+*.egg-info/
+build/
+dist/

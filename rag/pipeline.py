@@ -6,7 +6,7 @@ from rag.chunker import chunk_documents
 from rag.embeddings import embed
 from rag.llm import generate
 from rag.loader import load_documents
-from loci_engine.vectors import VectorStore
+from rag.vector_store import VectorStore
 
 
 def _chunk_id(source: str, page: int, start_index: int) -> str:

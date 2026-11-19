@@ -5,6 +5,7 @@ from pypdf import PdfReader
 
 
 def _load_pdf(file_path: str) -> list[Document]:
+    """Load PDF file and return list of Document objects."""
     reader = PdfReader(file_path)
     documents = []
     for page_num, page in enumerate(reader.pages):
@@ -16,6 +17,7 @@ def _load_pdf(file_path: str) -> list[Document]:
 
 
 def _load_text(file_path: str) -> list[Document]:
+    """Load text file (.txt or .md) and return list of Document objects."""
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
     return [Document(page_content=content, metadata={"source": file_path})]
