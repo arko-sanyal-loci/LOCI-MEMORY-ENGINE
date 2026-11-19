@@ -98,12 +98,12 @@ LOCI gives AI agents persistent memory that behaves like a thermodynamic system:
 
 | Module | Purpose | Paper(s) |
 |---|---|---|
-| `loci_engine/heat.py` | Hyperbolic activation law, tier constants, tier-aware decay | 09 |
-| `loci_engine/storage.py` | SQLite WAL, FTS5, append-only fact lineage, heat decay tick | 09, 08 |
+| `loci_engine/heat.py` | Hyperbolic activation law, tier constants, tier-aware decay | 05 |
+| `loci_engine/storage.py` | SQLite WAL, FTS5, append-only fact lineage, heat decay tick | 05, 08 |
 | `loci_engine/glassbox.py` | Append-only SHA-256 hash-chained shared learning ledger | — |
 | `loci_engine/card_router.py` | CARD query classification → recall depth + ranking strategy | 04 |
 | `loci_engine/session_ingester.py` | Live conversation feed → StorageEngine + CardRouter pipeline | 04 |
-| `loci_engine/unified_core.py` | LOCI facade — primary API for agents | 09 |
+| `loci_engine/unified_core.py` | Identity resolver, valence gate, goodwill ledger, snippet budget engine | — |
 | `loci_engine/mcp_server.py` | JSON-RPC 2.0 MCP server (spec 2024-11-05) | — |
 | `loci_engine/node_sync_daemon.py` | WAL-change detection, CRDT merge (LWW heat + lattice status), Merkle tree divergence, Glassbox cross-node sync | — |
 | `loci_engine/ethical_core.py` | Scar heat, competence gates, autonomy curve (A2 applied to ethics) | — |
@@ -120,12 +120,12 @@ LOCI gives AI agents persistent memory that behaves like a thermodynamic system:
 | `loci_engine/sanitizer.py` | Input sanitization before memory writes | — |
 | `loci_engine/session_continuity.py` | Cross-session state handoff | — |
 | `loci_engine/simulation_engine.py` | Counterfactual / simulation memory traces | — |
-| `loci_engine/slp_arena.py` | SymLinkPrev arena — Host RAM tier management | 09 |
+| `loci_engine/slp_arena.py` | SymLinkPrev arena — Host RAM tier management | 05 |
 | `loci_engine/sovereign_bridge.py` | Cross-agent trust bridge | — |
-| `loci_engine/store.py` | Entity + fact store (simpler facade over storage) | 09 |
-| `loci_engine/thermal_gradient.py` | Gaussian heat-gradient diffusion (not yet wired in; uses its own 0.70 / 0.25 tier cut-offs, see [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md#heat-thresholds)) | — |
+| `loci_engine/store.py` | Entity + fact store (simpler facade over storage) | 05 |
+| `loci_engine/thermal_gradient.py` | Gaussian heat-gradient diffusion (not yet wired in; uses its own 0.70 / 0.25 tier cut-offs, see [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md#heat-thresholds)) | 09 |
 | `loci_engine/threads.py` | Thread-safe memory access primitives | — |
-| `rag/` | Ollama-based document ingestion + CARD-categorized RAG pipeline | 04 |
+| `rag/` | Ollama document ingestion, sqlite-vec + FTS5 chunk store (`vector_store.py`), CARD-categorized RAG | 04 |
 
 ---
 
@@ -346,17 +346,17 @@ python -m loci_engine.node_sync_daemon --config config/nodes.env
 
 LOCI implements or extends the following research. See [`PAPERS.md`](PAPERS.md) for full citations.
 
-| ID | Title |
+| # | Paper |
 |---|---|
-| 01 | LOCI: Longitudinal Observation and Compression Interface |
+| 01 | Forecasting Affective State from Interaction Streams (LOCI r+e) |
 | 02 | Reflection-on-Action: Label-Free Learning (LOCI e+r) |
-| 03 | Separate Fast-Decaying Memory Spectrum for System Thoughts |
-| 04 | Category-Adaptive Recall Depth (CARD) for Heat-Tiered Memory Systems |
-| 05 | Focused Retention: Goal-Conditioned Switched Decay |
-| 06 | Goal-Conditioned Switched Decay — Implementation |
-| 07 | LOCI ∞ — Infinity Memory Middleware |
-| 08 | Versioned Fact Storage with Source Trust |
-| 09 | LOCI Heat-Tiered Memory Architecture (Main Paper) |
+| 03 | A Separate, Fast-Decaying Memory Spectrum for a System's Own Thoughts |
+| 04 | Category-Adaptive Recall Depth (CARD) |
+| 05 | LOCI: A Heat-Decaying, Goal-Conditioned Memory Architecture |
+| 06 | Focused Retention: Goal-Conditioned Switched Decay |
+| 07 | LOCI ∞: Infinity Memory Middleware |
+| 08 | LOCI Persistent AI Memory Engine: Versioned Fact Chains |
+| 09 | Thermal Reasoning Substrate (preprint) |
 
 Zenodo DOI: [10.5281/zenodo.21188425](https://doi.org/10.5281/zenodo.21188425)
 

@@ -13,7 +13,7 @@ GitHub: [@arko-sanyal-loci](https://github.com/arko-sanyal-loci)
 
 Role: All architecture decisions, design principles, research publications, system integration,
 hardware configuration, and project direction. Sole human author across all LOCI research
-publications (TD Commons defensive publications). Author on all 9 TD Commons papers.
+publications (TD Commons defensive publications). Author of all 9 LOCI papers (8 on TD Commons, 1 preprint).
 
 Specific contributions:
 - Heat thermodynamics: open-interval invariant (A1–A3), Constant of Hope (α), evidence accumulation
@@ -24,7 +24,7 @@ Specific contributions:
 - SessionIngester: live conversation feed → memory pipeline design
 - Multi-agent ethical architecture: Aethel Council, scar heat, competence gates, autonomy curves
 - Full system integration, operational scripts, node deployment procedures
-- All 9 TD Commons defensive publications (see PAPERS.md)
+- All 9 LOCI papers: 8 TD Commons defensive publications and 1 preprint (see PAPERS.md)
 
 ---
 
