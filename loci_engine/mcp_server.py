@@ -733,7 +733,6 @@ def handle_rpc_request(req: Dict[str, Any], ledger: NonOffsettingGoodwillLedger)
                 bridge_from_session=args.get("bridge_from"),
             )
             # Ethics enrollment: display all ethics principles at session start
-            import sqlite3
             with storage._get_connection() as _conn:
                 _ethics_rows = _conn.execute(
                     "SELECT namespace, canonical_text, heat FROM memory_item "

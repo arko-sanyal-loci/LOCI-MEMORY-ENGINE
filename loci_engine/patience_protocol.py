@@ -40,7 +40,7 @@ callers use to decide whether to wait.
 import math
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from loci_engine.glassbox import glassbox_learn
 

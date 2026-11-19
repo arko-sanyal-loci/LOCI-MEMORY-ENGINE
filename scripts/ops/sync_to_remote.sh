@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-HOST="root@srv1775801.hstgr.cloud"
-REMOTE_DIR="/home/loci/loci-memory-engine"
+source "$(dirname "${BASH_SOURCE[0]}")/_nodes.sh"
+require_nodes_var VPS_HOST VPS_USER VPS_PATH
+HOST="${VPS_USER}@${VPS_HOST}"
+cd "$LOCI_REPO_DIR"
+REMOTE_DIR="$VPS_PATH"
 
 echo "Syncing loci-memory-engine workspace to $HOST..."
 tar -czf - --exclude='.git' -C "$(pwd)" . | ssh "$HOST" "
@@ -12,7 +14,7 @@ tar -czf - --exclude='.git' -C "$(pwd)" . | ssh "$HOST" "
 "
 
 echo "Running parity check..."
-./check_remote_parity.sh
+"$(dirname "${BASH_SOURCE[0]}")/check_remote_parity.sh"
 
 echo "Triggering evaluation service..."
 ssh "$HOST" "su - loci -c '

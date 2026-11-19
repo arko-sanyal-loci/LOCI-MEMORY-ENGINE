@@ -24,11 +24,7 @@ All three are observe-only — they compute, record, and report. The caller
 wires results into whatever decision path they own.
 """
 
-import hashlib
 import json
-import math
-import os
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -188,7 +184,8 @@ def end_session(
             return {"error": f"session {session_id} not found"}
 
         bridged_from = row[0]
-        current_kernel = json.loads(row[1])
+        # kernel_snapshot is stored for PRS; decode but unused in this return value
+        _kernel_snap = json.loads(row[1]) if row[1] else []  # noqa: F841
 
         # Compute PRS if this session was bridged
         prs = None

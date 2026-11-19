@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse, hashlib, hmac, json, os, subprocess, sys, time
 from pathlib import Path
 
-DEVDRIVE = Path("/Volumes/DevDrive")
+DEVDRIVE = Path(os.environ.get("LOCI_DEVDRIVE", "/Volumes/DevDrive"))
 MEMORY   = DEVDRIVE / "Memory"
 STATE    = DEVDRIVE / "Memory-state"
 AUDIT    = STATE / "audit.jsonl"

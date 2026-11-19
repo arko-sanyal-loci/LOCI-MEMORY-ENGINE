@@ -26,7 +26,6 @@ Requires the ``sqlite-vec`` package (``pip install sqlite-vec``).
 import json
 import os
 import re
-import sqlite3
 import struct
 import time
 
@@ -68,7 +67,7 @@ class VectorStore:
         if os.path.isdir(path):
             raise RuntimeError(
                 f"{path!r} is a directory (looks like a leftover Chroma store) — "
-                "VectorStore needs a file path; point RAG_CHROMA_DB_PATH at a new "
+                "VectorStore needs a file path; point RAG_DB_PATH at a new "
                 "file, e.g. ./loci.db"
             )
         self._conn = open_db(path)

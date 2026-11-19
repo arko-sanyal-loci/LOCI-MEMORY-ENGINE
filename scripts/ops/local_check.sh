@@ -47,12 +47,11 @@ hostname -I
 
 echo
 echo "=== [10] UNIT TESTS ==="
-cd /home/arko-sanyal/Claude-Workspace 2>/dev/null \
-  || cd ~/Claude-Workspace 2>/dev/null \
-  || { echo "Claude-Workspace not found — skipping tests"; exit 0; }
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null \
+  || { echo "repository not found — skipping tests"; exit 0; }
 
 if [ -d tests ]; then
-    python3 -m unittest discover tests -v 2>&1
+    python3 -m pytest -q tests 2>&1
 else
     echo "No tests/ directory found in $(pwd)"
 fi

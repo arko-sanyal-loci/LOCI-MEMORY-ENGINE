@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any
 
 from loci_engine import ethics
 

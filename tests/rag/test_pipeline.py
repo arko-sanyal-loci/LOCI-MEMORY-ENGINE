@@ -44,7 +44,7 @@ requires_ollama = pytest.mark.skipif(
 
 @pytest.fixture
 def isolated_store(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CHROMA_DB_PATH", str(tmp_path / "chroma"))
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "chroma"))
     return tmp_path
 
 
@@ -71,7 +71,7 @@ def test_ingest_is_idempotent_on_rerun(isolated_store):
     from rag.embeddings import embed
     from loci_engine.vectors import VectorStore
 
-    engine = VectorStore(path=config.CHROMA_DB_PATH)
+    engine = VectorStore(path=config.DB_PATH)
     [query_vector] = embed(["sky"])
     results = engine.query(query_vector, top_k=10)
 

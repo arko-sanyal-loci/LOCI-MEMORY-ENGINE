@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 TAG="${1:-v0.1.0}"
-REPO="${2:-arko-sanyal2/loci-memory-engine}"
+REPO="${2:-arko-sanyal-loci/LOCI-MEMORY-ENGINE}"
 MANIFEST="loci_manifest_${TAG}.sha256"
 
 # If tracked/present locally, verify directly without re-fetching

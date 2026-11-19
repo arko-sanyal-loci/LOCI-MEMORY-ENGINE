@@ -4,9 +4,7 @@ Sovereign Architecture at port 8000. Agents communicate via REST endpoints
 that route through Glassbox for transparency.
 """
 
-import sys
 import os
-import json
 import time
 import hashlib
 from datetime import datetime, timezone

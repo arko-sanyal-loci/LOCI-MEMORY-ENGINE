@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$HOME/loci-memory-engine"
-CONSOLE_IP="192.168.10.149"
-VPS_HOST="srv1775801.hstgr.cloud"
-VPS_PATH="/home/loci/loci-memory-engine"
+source "$(dirname "${BASH_SOURCE[0]}")/ops/_nodes.sh"
+require_nodes_var CONSOLE_IP CONSOLE_USER VPS_HOST VPS_USER VPS_PATH
+REPO_DIR="$LOCI_REPO_DIR"
 
 cd "$REPO_DIR"
 
@@ -53,15 +52,15 @@ if systemctl --user is-active --quiet loci-mcp.service 2>/dev/null; then
     systemctl --user restart loci-mcp.service
 fi
 
-echo "=== [RING 2] Canary Sync to loci-console (Wired 192.168.0.149) ==="
-git push arko-sanyal@"$CONSOLE_IP":"$REPO_DIR" main --no-verify || echo "Canary node offline or unreachable; skipping ring 2."
-if ssh -o ConnectTimeout=3 arko-sanyal@"$CONSOLE_IP" "exit" 2>/dev/null; then
-    ssh arko-sanyal@"$CONSOLE_IP" "cd ~/loci-memory-engine && ~/loci-spark-venv/bin/python -m unittest discover tests/ -v"
+echo "=== [RING 2] Canary Sync to loci-console ($CONSOLE_IP) ==="
+git push "$CONSOLE_USER@$CONSOLE_IP":"$REPO_DIR" main --no-verify || echo "Canary node offline or unreachable; skipping ring 2."
+if ssh -o ConnectTimeout=3 "$CONSOLE_USER@$CONSOLE_IP" "exit" 2>/dev/null; then
+    ssh "$CONSOLE_USER@$CONSOLE_IP" "cd ~/loci-memory-engine && ~/loci-spark-venv/bin/python -m unittest discover tests/ -v"
 fi
 
-echo "=== [RING 3] VPS Substrate Promotion (srv1775801.hstgr.cloud) ==="
-git push root@"$VPS_HOST":"$VPS_PATH" main --no-verify
-ssh root@"$VPS_HOST" "cd /home/loci/loci-memory-engine && python3 -m unittest discover tests/ -v"
+echo "=== [RING 3] VPS Substrate Promotion ($VPS_HOST) ==="
+git push "$VPS_USER@$VPS_HOST":"$VPS_PATH" main
+ssh "$VPS_USER@$VPS_HOST" "cd $VPS_PATH && python3 -m pytest -q tests/"
 
 echo "=== [RING 4] GitHub Upstream Canonical Sync ==="
 git push origin main --no-verify

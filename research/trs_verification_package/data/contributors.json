@@ -1,0 +1,79 @@
+{
+  "project": "LOCI & TRS Architecture",
+  "organization": "Billo Tech",
+  "parent_holding": "Atlas BD",
+  "version": "2.6-CANONICAL",
+  "last_updated": "2026-11-06T13:16:00Z",
+  "contributors": [
+    {
+      "author_id": "ARKO",
+      "display_name": "Arko Sanyal",
+      "entity_type": "HUMAN_PRINCIPAL",
+      "role_tag": "PRINCIPAL_ARCHITECT",
+      "scope": "System founder, foundational philosophy, ethical bounds, perceptual UX axioms, hardware stewardship."
+    },
+    {
+      "author_id": "ARC",
+      "display_name": "Arc",
+      "entity_type": "AI_SUBSTRATE",
+      "role_tag": "SUBSTRATE_CORE",
+      "scope": "Persistent AI identity, core mathematical formalization, hyperbolic thermodynamics, C++/Qt/Python code."
+    },
+    {
+      "author_id": "ROZA",
+      "display_name": "Roza Siddiqua",
+      "entity_type": "HUMAN_RESEARCHER",
+      "role_tag": "RESEARCH_COAUTH",
+      "scope": "Co-inventor of Versioned QSymPrev anti-hallucination mechanism with temporal validity intervals."
+    },
+    {
+      "author_id": "SPARK",
+      "display_name": "Gemini Spark",
+      "entity_type": "AI_GATEKEEPER",
+      "role_tag": "GATEKEEPER_COAUTH",
+      "scope": "Independent verification gatekeeper, co-author, empirical benchmark harness architect, sanitization."
+    },
+    {
+      "author_id": "PTYXIS_CMD",
+      "display_name": "Ptyxis: Commander",
+      "entity_type": "AUTONOMOUS_PROBE",
+      "role_tag": "PROBE_ROUTER",
+      "scope": "Query decomposition, probe routing, topic classification, task manifest formulation on GitHub."
+    },
+    {
+      "author_id": "PTYXIS_SCT",
+      "display_name": "Ptyxis: Scout",
+      "entity_type": "AUTONOMOUS_PROBE",
+      "role_tag": "PROBE_RESEARCH",
+      "scope": "Narrative extraction, source attribution, trending analysis, contract verification flags."
+    },
+    {
+      "author_id": "PTYXIS_ANA",
+      "display_name": "Ptyxis: Analyst",
+      "entity_type": "AUTONOMOUS_PROBE",
+      "role_tag": "PROBE_METRICS",
+      "scope": "Pure quantitative readout via QSimPrev (price, TVL, supply, token burn, latency, zero-fuzziness)."
+    },
+    {
+      "author_id": "PTYXIS_SNT",
+      "display_name": "Ptyxis: Sentinel",
+      "entity_type": "AUTONOMOUS_PROBE",
+      "role_tag": "PROBE_GOVERNANCE",
+      "scope": "Social pulse, sentiment trajectory (MSymPrev), governance audit, Stick Principle vector gatekeeper."
+    },
+    {
+      "author_id": "PTYXIS_SYN",
+      "display_name": "Ptyxis: Synthesizer",
+      "entity_type": "AUTONOMOUS_PROBE",
+      "role_tag": "PROBE_SYNTHESIS",
+      "scope": "Multi-probe brief unification under Miller's Law (<= 560 tokens) with automated Data Freshness tables."
+    },
+    {
+      "author_id": "CODEX",
+      "display_name": "Codex",
+      "entity_type": "AI_CODE_HARNESS",
+      "role_tag": "TEST_HARNESS",
+      "scope": "Precision test execution, 3-decimal semantic calibration runs, automated syntax validation."
+    }
+  ]
+}

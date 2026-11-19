@@ -16,7 +16,7 @@ Owner: Arko Sanyal | Enforced by: Claude (Director) + FORGE (Coder)
 |---|---|---|---|---|
 | RTX 3080 Ti 12GB | Windows GPU machine | 12GB VRAM | Fast | Owned |
 | Apple M4 Mini | Local Mac | 16GB unified | Fast (Metal) | Owned |
-| VPS Ubuntu 24.04 | 187.127.121.247 | 2GB RAM | Slow | ~$6/mo |
+| VPS Ubuntu 24.04 | <VPS_IP> | 2GB RAM | Slow | ~$6/mo |
 
 ### AI Models
 

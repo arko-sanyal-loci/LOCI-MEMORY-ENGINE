@@ -6,7 +6,9 @@ spelling deviation (correction_rate). Raises ProvenanceAnomalyEvent at 1.8s
 (soft) / 3.2s (hard). restriction_delta fed to governance.py SPVG consent.
 """
 from __future__ import annotations
-import hashlib, math, statistics, time
+import math
+import statistics
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 

@@ -25,3 +25,8 @@ glassbox_ledger.jsonl*
 feedback_ledger.jsonl*
 agent_registry.json
 .venv/
+
+# Real node addresses (template: config/nodes.env.example)
+config/nodes.env
+.env
+*.env.local

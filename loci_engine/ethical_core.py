@@ -103,7 +103,7 @@ RELATED MODULES
 import hashlib
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal
 
 from loci_engine.heat import MEMORY_CLASSES, MemoryClass  # re-exported for existing callers
 from loci_engine.heat import evidence_accumulation as _evidence_accumulation

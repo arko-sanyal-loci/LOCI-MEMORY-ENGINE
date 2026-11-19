@@ -10,7 +10,7 @@ Implements Section 9 & Figure 7 of the Master Compendium:
 """
 
 import math
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from loci_engine.unified_core import StickPrincipleValenceGate
 
 class CounterfactualSimulationEngine:

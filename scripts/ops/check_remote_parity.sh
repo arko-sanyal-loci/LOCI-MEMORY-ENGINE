@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-HOST="root@srv1775801.hstgr.cloud"
-REMOTE_PATH="/home/loci/loci-memory-engine"
+source "$(dirname "${BASH_SOURCE[0]}")/_nodes.sh"
+require_nodes_var VPS_HOST VPS_USER VPS_PATH
+HOST="${VPS_USER}@${VPS_HOST}"
+cd "$LOCI_REPO_DIR"
+REMOTE_PATH="$VPS_PATH"
 
 echo "=== Verifying Local vs Remote Parity ==="
 LOCAL_HASH=$(find loci_engine -type f ! -path '*/__pycache__*' ! -name '*.pyc' -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')

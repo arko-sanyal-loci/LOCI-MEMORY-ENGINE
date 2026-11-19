@@ -6,7 +6,6 @@ Packing: Exactly 20 bytes per node; 3 nodes + 4B header per 64-byte cache line.
 """
 
 import struct
-import zlib
 
 class SymLinkPrevNode:
     # Struct format: 8s (64b Z), 4s (32b D), H (16b Heat), H (16b Trust), I (32b CRC/Lineage)

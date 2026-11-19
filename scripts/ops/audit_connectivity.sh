@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # scripts/audit_connectivity.sh
-# Run ON the VPS (srv1775801.hstgr.cloud) or on the Ubuntu console node.
+# Run ON the VPS ($VPS_HOST) or on the Ubuntu console node.
 # Checks SSH, firewall, OS config, and reachability for all cluster nodes.
-# Usage: bash scripts/audit_connectivity.sh
+# Usage: bash scripts/ops/audit_connectivity.sh
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG="$SCRIPT_DIR/../config/nodes.env"
-[ -f "$CONFIG" ] && source "$CONFIG"
+source "$(dirname "${BASH_SOURCE[0]}")/_nodes.sh"
 
 PASS=0; WARN=0; FAIL=0
 _ok()   { echo "  [PASS] $*"; ((PASS++)); }
@@ -176,7 +174,7 @@ else
 fi
 
 # Workspace path
-VPS_WS="${VPS_PATH:-/home/loci/loci-memory-engine}"
+VPS_WS="${VPS_PATH:-$LOCI_REPO_DIR}"
 if [ -d "$VPS_WS" ]; then
     _ok "VPS workspace exists: $VPS_WS"
     if [ -f "$VPS_WS/manifest.sha256" ]; then

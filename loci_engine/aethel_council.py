@@ -61,7 +61,6 @@ participation. "Heard" means "registered input exists," nothing more.
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
 
 from loci_engine.ethics import ProvenanceLedger
 

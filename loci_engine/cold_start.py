@@ -22,6 +22,38 @@ import os
 
 from loci_engine.agent_identities import AGENT_IDENTITIES
 
+
+def _load_system_info() -> dict:
+    """Describe the cluster from config/nodes.env, or say it is unconfigured."""
+    path = os.environ.get("LOCI_NODES_ENV") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "nodes.env")
+    env: dict = {}
+    if os.path.exists(path):
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip().strip('"')
+    if not env:
+        return {"source": path, "status": "unconfigured: copy config/nodes.env.example to config/nodes.env"}
+    return {
+        "source": path + " and architecture/unified_port_registry.md (not guessed)",
+        "nodes": {
+            "workstation (station-0)": {
+                "ip": env.get("WORKSTATION_IP"),
+                "role": "primary compute, sovereign engine (uvicorn :8000)",
+                "gpus": "Intel Arc B70 Pro (32GB, SYCL, loci-arc-35b on :11435), NVIDIA RTX 5060 Ti (16GB, Ollama, loci-rtx-14b on :11434)",
+            },
+            "console (laptop)": {"ip": env.get("CONSOLE_IP"), "user": env.get("CONSOLE_USER"),
+                                 "role": "operator console, no services exposed"},
+            "vps": {"host": env.get("VPS_HOST"), "user": env.get("VPS_USER"),
+                    "repo_path": env.get("VPS_PATH"), "role": "external mirror"},
+            "mac_mini": {"ip": env.get("MAC_MINI_IP"), "status": "staged node"},
+        },
+        "gateway_port": "8000 (Sovereign Engine + LOCI Bridge)",
+    }
+
 COLD_START_PACKET = {
     "packet_version": "1.0",
 
@@ -45,34 +77,9 @@ COLD_START_PACKET = {
         ),
     },
 
-    "system_info": {
-        "source": "config/nodes.env and architecture/unified_port_registry.md — not guessed",
-        "nodes": {
-            "workstation (station-0)": {
-                "ip": "192.168.10.181",
-                "role": "primary compute, sovereign engine (uvicorn :8000)",
-                "repo_path": "~/loci-memory-engine",
-                "gpus": "Intel Arc B70 Pro Sparkle (32GB, SYCL, loci-arc-35b on :11435), NVIDIA RTX 5060 Ti (16GB, Ollama, loci-rtx-14b on :11434)",
-            },
-            "console (laptop)": {
-                "ip": "192.168.10.149",
-                "user": "arko-sanyal",
-                "role": "operator console, no services exposed",
-            },
-            "vps (billo.tech)": {
-                "host": "srv1775801.hstgr.cloud",
-                "user": "root",
-                "repo_path": "/home/loci/loci-memory-engine",
-                "role": "external mirror, subnet feedback — status unconfirmed as of last scan (SSH key needed re-setup)",
-            },
-            "mac_mini": {
-                "ip": "192.168.0.150",
-                "status": "staged/resurrected node, not yet confirmed active",
-            },
-        },
-        "subnet": "192.168.10.0/24",
-        "gateway_port": "8000 (Sovereign Engine + LOCI Bridge, 30 REST routes)",
-    },
+    # Node addresses are loaded at runtime from config/nodes.env (git-ignored),
+    # never hard-coded here: this module ships in a public repository.
+    "system_info": _load_system_info(),
 
     "comms_protocol": {
         "register": {

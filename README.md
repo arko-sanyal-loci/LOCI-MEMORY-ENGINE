@@ -62,7 +62,7 @@ LOCI gives AI agents persistent memory that behaves like a thermodynamic system:
         ▼
 ┌───────────────────────────────────────────────────────┐
 │              Heat Tier Routing (heat.py)               │
-│   HOT  (H ≥ 0.80, τ=1.25d) → VRAM active set          │
+│   HOT  (H ≥ 0.70, τ=1.25d) → VRAM active set          │
 │   MILD (H ≥ 0.35, τ=1.75d) → Host RAM SymLinkPrev     │
 │   COLD (H <  0.35, τ=2.25d) → NVMe archival ledger    │
 │   θ_HOT = 0.700 (VRAM admission, Spark-validated)      │
@@ -103,6 +103,14 @@ LOCI gives AI agents persistent memory that behaves like a thermodynamic system:
 | `loci_engine/thermal_gradient.py` | Multi-node heat gradient propagation | — |
 | `loci_engine/threads.py` | Thread-safe memory access primitives | — |
 | `rag/` | Ollama-based document ingestion + CARD-categorized RAG pipeline | 04 |
+| `loci_engine/vectors.py` | sqlite-vec + FTS5 hybrid RAG store; RRF(k=60) fusion; heat persistence per chunk | — |
+| `loci_engine/db.py` | `open_db()` — WAL + FK-enforced connection factory | — |
+| `loci_engine/provenance.py` | `resolve_trust()`, `UserStated`, Bayesian evidence weighting | — |
+| `loci_engine/tau_gate.py` | Dynamic τ gate with MRR targets; confidence history; query-type routing | — |
+| `loci_engine/compressor.py` | `TfidfCompressor` — sentence-level context budget enforcement (no model) | — |
+| `loci_engine/value_bus.py` | `ValueBus` — typed-slot scoreboarding for inter-agent value passing | — |
+| `loci_engine/secrets_guard.py` | `redact()` / `contains_secret()` — 8-family secret scanner applied at every write | — |
+| `coordination_bus/` | HMAC-authenticated inter-agent message bus + MCP server | — |
 
 ---
 
@@ -129,7 +137,7 @@ H_k(t) = α_k + (1 − α_k)(1 − e^{−β · E_k(t)})
 
 | Tier | Boundary | τ (decay half-life) | Hardware |
 |---|---|---|---|
-| HOT | H ≥ 0.8000 | 1.25 days | VRAM active working set |
+| HOT | H ≥ 0.7000 | 1.25 days | VRAM active working set |
 | MILD | H ≥ 0.3500 | 1.75 days | Host RAM SymLinkPrev arena |
 | COLD | H < 0.3500 | 2.25 days | NVMe archival ledger |
 
@@ -266,7 +274,7 @@ LOCI supports multi-node operation via `NodeSyncDaemon`. Each node:
 systemctl start loci-sync
 
 # Or directly
-python -m loci_engine.node_sync_daemon --config config/nodes.env
+python -m loci_engine.node_sync_daemon  # reads $LOCI_NODES_ENV or config/nodes.env
 ```
 
 ---
@@ -275,7 +283,7 @@ python -m loci_engine.node_sync_daemon --config config/nodes.env
 
 | File | Purpose |
 |---|---|
-| `config/nodes.env` | Node addresses and sync intervals |
+| `config/nodes.env.example` | Template for per-machine node config (copy to `config/nodes.env`, git-ignored) |
 | `config/gpu_allocation.json` | GPU memory tier budget |
 | `config/ssh_client.conf` | SSH config for node-to-node ops |
 | `config/loci_agent.Modelfile` | Ollama agent modelfile |
@@ -315,6 +323,9 @@ See [`AUTHORS.md`](AUTHORS.md) for complete attribution.
 
 ## License
 
-See [`LICENSE.md`](LICENSE.md).
+MIT — see [`LICENSE.md`](LICENSE.md).
 
-© 2026 Arko Sanyal / Billo Tech. All rights reserved.
+Benchmarks under `research/trs_verification_package/` derive from Ptyxis
+(AGPL-3.0) and are not part of the installable package. Certain architectural
+ideas are subject to patent consideration by Arko Sanyal / Atlas BD (filing
+anticipated before July 4, 2027). No patent rights are granted by this license.

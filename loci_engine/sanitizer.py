@@ -32,7 +32,6 @@ from typing import Any, Dict, List, Optional
 
 class PromptInjectionError(Exception):
     """Raised when malicious prompt injection or instruction override is detected."""
-    pass
 
 
 class PromptSanitizer:

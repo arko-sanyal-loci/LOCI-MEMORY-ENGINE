@@ -37,7 +37,7 @@ SECRET_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("private_key", re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----")),
     ("bearer", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9_\-\.=]{20,}")),
-    ("url_credentials", re.compile(r"(?<=://)[^/\s:@]+:[^/\s@]+(?=@)")),
+    ("url_credentials", re.compile(r"(?<=://)[^/\s:@<]+:[^/\s@]+(?=@)")),
 ]
 
 
