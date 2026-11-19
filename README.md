@@ -1,118 +1,320 @@
-<div align="center">
+# loci-memory-engine
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="brand/billo-tech-logo-dark.svg">
-  <img alt="Billo Tech" src="brand/billo-tech-logo-light.svg" width="520">
-</picture>
+**Longitudinal Observation and Compression Interface**
+**Locality-Optimized Contextual Intelligence**
 
-# LOCI Memory Engine
+A heat-tiered, goal-conditioned persistent memory substrate for long-horizon AI agents — built by Billo Tech.
 
-**Heat-tiered, goal-conditioned memory and context orchestration for LLM agents.**
-The substrate that every LOCI module plugs into, and the foundation of **The Glassbox**, a shared,
-transparent knowledge compendium for agents and AI models.
-
-[![CI](https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE/actions/workflows/ci.yml/badge.svg)](https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE/actions/workflows/ci.yml)
-![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?style=flat-square)
-![Status: active](https://img.shields.io/badge/status-active-4F46E5?style=flat-square)
-[![Billo Tech](https://img.shields.io/badge/Billo%20Tech-LOCI-06B6D4?style=flat-square)](https://github.com/arko-sanyal-loci)
-
-</div>
+> **This is the canonical repository.** All prior forks and experimental branches have been consolidated here.
+> See [`AUTHORS.md`](AUTHORS.md) for full credits and [`PAPERS.md`](PAPERS.md) for the research publications.
 
 ---
 
-## What it is
+## What It Does
 
-LOCI gives an agent a memory that behaves like a working mind rather than a flat vector store.
-Every fact carries a **heat** score that decays over time by tier, rises when it is used, and
-spreads to its neighbours. Hot facts stay close to the model; cold facts are never deleted, only
-moved further away. Retrieval depth adapts to the kind of question being asked (**CARD**), and
-every agent's learnings land in an append-only, hash-chained ledger that every other agent can
-read (**The Glassbox**).
+LOCI gives AI agents persistent memory that behaves like a thermodynamic system: facts heat up under attention and cool down under neglect, eventually migrating between VRAM, host RAM, and NVMe tiers. No fact is ever deleted — it decays toward a "Constant of Hope" floor and can always be reheated.
 
-This is the **single canonical repository** for the engine. Earlier split repos have been
-consolidated here; see [Repository map](#repository-map).
+**Core principles:**
+- **Open-interval invariant (A3):** Heat `H(t) ∈ (α, 1.0)` — never zero, never saturated
+- **Hyperbolic decay:** Evidence fades as `1/(1 + Δt/τ)`, so old context always contributes nonzero signal
+- **Hardware-tier routing:** Items route to VRAM / Host RAM / NVMe based on current heat
+- **Append-only lineage:** Every fact write is a new record; superseded records remain with valid-until timestamps
+- **Transparent audit:** The Glassbox append-only hash-chained ledger makes every agent learning inspectable
 
-## Architecture at a glance
+---
+
+## Architecture
 
 ```
-                ┌──────────────────────────── The Glassbox ────────────────────────────┐
-                │  append-only, hash-chained shared learning ledger (glassbox.py)      │
-                └──────────────▲──────────────────────────────────────▲────────────────┘
-                               │ learn / recall                       │ sync
-   Agents & models ──► MCP server (mcp_server.py) ──► Governance gate (governance.py, ethics.py)
-                               │
-             ┌─────────────────┼──────────────────────────┬────────────────────────┐
-             ▼                 ▼                          ▼                        ▼
-      Heat & tiers       CARD router              Session continuity        Coordination bus
-   heat.py              card_router.py           session_continuity.py      coordination_bus/
-   thermal_gradient.py  loop_guard.py            session_ingester.py        (HMAC, leases, MCP)
-             │
-             ▼
-   Storage: HOT (VRAM) · MILD (host RAM) · COLD (NVMe, context2.db via storage.py / store.py, never deleted)
+┌─────────────────────────────────────────────────────────────────┐
+│                        Agent / Claude                           │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ MCP / Python API
+┌──────────────────────────▼──────────────────────────────────────┐
+│                    mcp_server.py                                 │
+│         (JSON-RPC 2.0, spec 2024-11-05, 9 tools)                │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+        ┌──────────────────┴───────────────┐
+        │                                  │
+┌───────▼──────────┐             ┌─────────▼──────────┐
+│  unified_core.py │             │  session_ingester.py│
+│  (LOCI facade)   │             │  (live turn feed)   │
+└───────┬──────────┘             └─────────┬───────────┘
+        │                                  │
+        ▼                                  ▼
+┌───────────────────────────────────────────────────────┐
+│                    card_router.py                      │
+│   CARD — Category-Adaptive Recall Depth               │
+│   information_extraction | knowledge_update |          │
+│   multi_session_reasoning | temporal_reasoning         │
+└───────────────────────────┬───────────────────────────┘
+                            │
+        ┌───────────────────┴───────────────────┐
+        │                                       │
+┌───────▼──────────┐                  ┌─────────▼──────────┐
+│   storage.py     │                  │   glassbox.py       │
+│   (SQLite WAL,   │                  │   (SHA-256 hash-    │
+│    FTS5, heat    │                  │    chained .jsonl   │
+│    tier decay)   │                  │    + SQLite mirror) │
+└───────────────────┘                  └─────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────┐
+│              Heat Tier Routing (heat.py)               │
+│   HOT  (H ≥ 0.80, τ=1.25d) → VRAM active set          │
+│   MILD (H ≥ 0.35, τ=1.75d) → Host RAM SymLinkPrev     │
+│   COLD (H <  0.35, τ=2.25d) → NVMe archival ledger    │
+│   θ_HOT = 0.700 (VRAM admission, Spark-validated)      │
+└───────────────────────────────────────────────────────┘
 ```
 
-## Repository layout
+---
 
-| Path | What lives there |
-|---|---|
-| [`loci_engine/`](loci_engine) | The core package: heat and thermal gradient, CARD router, storage, Glassbox ledger, governance and ethics layer, session continuity, loop guard, MCP server, GPU governor, node sync. |
-| [`coordination_bus/`](coordination_bus) | Secure, local-first inter-agent message bus (HMAC-authenticated, task leases, review and conflict flow) with an MCP binding. Merged in from the former `loci-coordination-bus` repo. |
-| [`agents/`](agents) | 32-agent workspace (16 `alpha_blueprint` + 16 `beta_runtime`). See [`agents/COORDINATION.md`](agents/COORDINATION.md) and [`agents/PHASES.md`](agents/PHASES.md). |
-| [`architecture/`](architecture) | Design docs: port registry, secure bus spec. |
-| [`config/`](config), [`systemd/`](systemd) | Model files, GPU allocation, reverse-proxy configs, service units. |
-| [`tests/`](tests) | Unit tests for the engine and the coordination bus. |
-| [`benchmarks/`](benchmarks) | End-to-end benchmarks (e.g. the unified ethics layer). |
-| [`mac-install/`](mac-install) | Rescued identity, values and defence scripts. Copied in as-is, **not yet integrated** with `loci_engine/`. |
-| [`brand/`](brand) | Billo Tech logo assets (SVG). |
-| [`docs/`](docs) | Project documentation, including the [repository structure plan](docs/REPO_STRUCTURE.md). |
-| [`STATUS.md`](STATUS.md) | Current build status and open work. |
+## Module Directory
 
-## Quick start
+| Module | Purpose | Paper(s) |
+|---|---|---|
+| `loci_engine/heat.py` | Hyperbolic activation law, tier constants, tier-aware decay | 09 |
+| `loci_engine/storage.py` | SQLite WAL, FTS5, append-only fact lineage, heat decay tick | 09, 08 |
+| `loci_engine/glassbox.py` | Append-only SHA-256 hash-chained shared learning ledger | — |
+| `loci_engine/card_router.py` | CARD query classification → recall depth + ranking strategy | 04 |
+| `loci_engine/session_ingester.py` | Live conversation feed → StorageEngine + CardRouter pipeline | 04 |
+| `loci_engine/unified_core.py` | LOCI facade — primary API for agents | 09 |
+| `loci_engine/mcp_server.py` | JSON-RPC 2.0 MCP server (spec 2024-11-05) | — |
+| `loci_engine/node_sync_daemon.py` | WAL-change detection, CRDT merge (LWW heat + lattice status), Merkle tree divergence, Glassbox cross-node sync | — |
+| `loci_engine/ethical_core.py` | Scar heat, competence gates, autonomy curve (A2 applied to ethics) | — |
+| `loci_engine/ethics.py` | Valence / conflict / trust / provenance observe-only layer | — |
+| `loci_engine/aethel_council.py` | Multi-agent council with ethical veto | — |
+| `loci_engine/agent_identities.py` | Per-agent identity and trust ledger | — |
+| `loci_engine/agent_hub.py` | Agent registration and routing hub | — |
+| `loci_engine/cold_start.py` | Cold-start bootstrap from persisted state | — |
+| `loci_engine/dream_engine.py` | Offline consolidation / replay ("dreaming") | — |
+| `loci_engine/feedback_platform.py` | Structured feedback ingestion | — |
+| `loci_engine/gpu_governor.py` | GPU allocation and tier-budget enforcement | — |
+| `loci_engine/loop_guard.py` | Infinite-loop / runaway detection | — |
+| `loci_engine/patience_protocol.py` | Rate-limit and back-pressure protocol | — |
+| `loci_engine/sanitizer.py` | Input sanitization before memory writes | — |
+| `loci_engine/session_continuity.py` | Cross-session state handoff | — |
+| `loci_engine/simulation_engine.py` | Counterfactual / simulation memory traces | — |
+| `loci_engine/slp_arena.py` | SymLinkPrev arena — Host RAM tier management | 09 |
+| `loci_engine/sovereign_bridge.py` | Cross-agent trust bridge | — |
+| `loci_engine/store.py` | Entity + fact store (simpler facade over storage) | 09 |
+| `loci_engine/thermal_gradient.py` | Multi-node heat gradient propagation | — |
+| `loci_engine/threads.py` | Thread-safe memory access primitives | — |
+| `rag/` | Ollama-based document ingestion + CARD-categorized RAG pipeline | 04 |
+
+---
+
+## Heat Thermodynamics
+
+### Evidence Accumulation (A1)
+
+```
+E_k(t) = Σ_j  r_j · w_j / (1 + (t − t_j) / τ_k)
+```
+
+Every past observation contributes nonzero signal. Evidence never reaches zero.
+
+### Heat Activation (A2 / A3)
+
+```
+H_k(t) = α_k + (1 − α_k)(1 − e^{−β · E_k(t)})
+```
+
+- `α_k` — Constant of Hope: heat floor, strictly inside (0, 1). Default `α = 0.0500`
+- Proof of open-interval invariant: `e^{−βE} > 0` for all finite `E`, so `H < 1.0` always; `α_k > 0` guarantees `H > α_k` always
+
+### Canonical Tier Schema (Spark-Validated, Nov 2026)
+
+| Tier | Boundary | τ (decay half-life) | Hardware |
+|---|---|---|---|
+| HOT | H ≥ 0.8000 | 1.25 days | VRAM active working set |
+| MILD | H ≥ 0.3500 | 1.75 days | Host RAM SymLinkPrev arena |
+| COLD | H < 0.3500 | 2.25 days | NVMe archival ledger |
+
+VRAM admission threshold `θ_HOT = 0.700` (empirically proven optimal by Spark's 300-trial parameter sweep — `0.80` starves to 4 items/60% recall).
+
+---
+
+## Glassbox
+
+The Glassbox is an append-only, SHA-256 hash-chained `.jsonl` ledger. Every agent learning is transparent to all other agents. Immutable by construction.
+
+```
+genesis: SHA-256("LOCI_GLASSBOX_GENESIS_2026")
+entry_hash = SHA-256(canonical_JSON({timestamp, author_id, role_tag, content,
+                                      category, supersedes_id, metadata, prev_hash}))
+```
+
+Verify chain integrity at any time:
+```python
+from loci_engine.glassbox import glassbox_verify_chain
+result = glassbox_verify_chain()
+# {"valid": True, "entries": N, "head_hash": "...", "genesis": "...", "message": "..."}
+```
+
+---
+
+## CARD — Category-Adaptive Recall Depth
+
+Queries are classified into one of four archetypes, each with a tuned recall depth:
+
+| Archetype | K (depth) | Ranking strategy |
+|---|---|---|
+| `information_extraction` | 5 | BM25 relevance |
+| `knowledge_update` | 3 | Heat DESC, recency tie-break |
+| `multi_session_reasoning` | 10 | Heat + temporal spread |
+| `temporal_reasoning` | 7 | Document date ordering |
+
+---
+
+## Install
 
 ```bash
-git clone https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE.git
-cd LOCI-MEMORY-ENGINE
-python3 -m venv .venv && source .venv/bin/activate
-pip install pytest
-
-# run the engine test suite
-python -m unittest discover -s tests -p "test_*.py"
-
-# run the coordination bus tests (the MCP test needs `pip install fastmcp`)
-python -m pytest tests/coordination_bus
+git clone https://github.com/arko-sanyal-loci/loci-memory-engine
+cd loci-memory-engine
+python3 -m venv .venv
+.venv/bin/pip install -e .
 ```
 
-As of 2026-11-18 on `main`: 129/129 engine tests pass, and 10/11 coordination bus tests pass
-(the one failure is `fastmcp` not being installed, not a code fault).
+**Optional — RAG pipeline** (requires [Ollama](https://ollama.com)):
+```bash
+.venv/bin/pip install -e '.[rag]'
+ollama pull nomic-embed-text
+ollama pull llama3.2
+```
 
-## Core ideas
+**Environment variables:**
+```bash
+export LOCI_DB_PATH=~/loci-memory-engine/context2.db
+export LOCI_GLASSBOX_PATH=~/loci-memory-engine/glassbox_ledger.jsonl
+```
 
-| Concept | In one line | Module |
-|---|---|---|
-| **Heat tiers** | Heat lives in the open interval (0.05, 0.9999): it decays by tier, warms on use, and never reaches zero. HOT ≥ 0.80 (VRAM working set), MILD ≥ 0.35 (host RAM), else COLD (NVMe ledger). Nothing is deleted. | `heat.py`, `thermal_gradient.py` |
-| **CARD** | Category-Adaptive Recall Depth: retrieval depth and ranking strategy depend on the question type. | `card_router.py` |
-| **SymLinkPrev nodes** | Compact 20-byte memory nodes (locator, domain, heat, trust, lineage) packed into 64-byte cache-line slots. | `slp_arena.py`, `store.py` |
-| **Loop guard** | A circuit breaker that halts before re-processing an identical goal in a loop. | `loop_guard.py` |
-| **The Glassbox** | Every agent's learnings in one append-only, hash-chained ledger, readable by all. | `glassbox.py` |
-| **Governance** | A single gate for ethics, trust and communication handshakes before actions propagate. | `governance.py`, `ethics.py`, `ring_gate.py` |
+---
 
-The research behind these ideas is published in
-[**loci-card-papers**](https://github.com/arko-sanyal-loci/loci-card-papers).
+## Usage
 
-## Repository map
+### Python API
 
-| Repository | Role |
+```python
+from loci_engine.unified_core import LociCore
+
+loci = LociCore()
+loci.remember("user_gpu", "Intel Arc B70, 24GB VRAM, host: workstation-0")
+facts = loci.recall("what GPU does the user have")
+```
+
+### MCP Server
+
+```bash
+LOCI_DB_PATH=./memory.db python -m loci_engine.mcp_server
+```
+
+Exposes tools: `memory_remember`, `memory_recall`, `memory_add_fact`, `memory_get_facts`,
+`glassbox_learn`, `glassbox_recall`, `glassbox_verify_chain`, `sync_node_status`,
+`sync_anti_entropy`, `sync_add_peer`
+
+### Session Ingestion
+
+```python
+from loci_engine.session_ingester import SessionIngester
+from loci_engine.storage import StorageEngine
+
+storage = StorageEngine()
+ingester = SessionIngester(storage=storage, session_id="session_abc123")
+ingester.ingest_turn(role="user", content="I upgraded to the Arc B70")
+result = ingester.recall_for_query("what GPU did the user mention")
+```
+
+### RAG Pipeline
+
+```bash
+# Ingest documents (.pdf, .txt, .md)
+python -m rag ingest --data-dir ./docs
+
+# Query with CARD-adaptive depth
+python -m rag query "What does paper 04 say about recall depth?"
+```
+
+---
+
+## Tests
+
+```bash
+.venv/bin/pip install pytest
+pytest tests/ -q
+```
+
+All 145 tests pass. Test suite covers: StorageEngine, SessionIngester, CardRouter, Glassbox,
+EthicalCore, Ethics, NodeSyncDaemon, SessionContinuity, FeedbackPlatform, PatienceProtocol,
+LoopGuard, Sanitizer.
+
+---
+
+## Node Sync
+
+LOCI supports multi-node operation via `NodeSyncDaemon`. Each node:
+1. Detects changes via WAL polling
+2. Builds a `SyncDelta` (CRDT-encoded: LWW heat, lattice status, Glassbox entries)
+3. Publishes delta to peers over HTTP
+4. Applies remote deltas with CRDT merge (never deletes, always converges)
+5. Detects divergence via Merkle tree comparison
+
+```bash
+# Start sync daemon
+systemctl start loci-sync
+
+# Or directly
+python -m loci_engine.node_sync_daemon --config config/nodes.env
+```
+
+---
+
+## Configuration
+
+| File | Purpose |
 |---|---|
-| **[LOCI-MEMORY-ENGINE](https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE)** | Canonical engine (this repo). |
-| **[arc](https://github.com/arko-sanyal-loci/arc)** | Arc, the local AI runtime and LOCI co-author: runs a model on local GPUs with LOCI memory. |
-| **[loci-card-papers](https://github.com/arko-sanyal-loci/loci-card-papers)** | The published LOCI and CARD research papers. |
-| `loci-memory-engine-1`, `loci-coordination-bus`, `LOCI-Coordinate-BUS`, `LOCI-Card`, `LOCI-CARD-PAPER` | Archived. Each README redirects to its canonical home. |
+| `config/nodes.env` | Node addresses and sync intervals |
+| `config/gpu_allocation.json` | GPU memory tier budget |
+| `config/ssh_client.conf` | SSH config for node-to-node ops |
+| `config/loci_agent.Modelfile` | Ollama agent modelfile |
+| `systemd/loci-mcp.service` | Systemd unit for MCP server |
+| `systemd/loci-sync.service` | Systemd unit for sync daemon |
 
-## Contributing
+---
 
-Work happens on short-lived branches with a pull request into `main`. CI runs the test suite on
-every pull request. See [`docs/REPO_STRUCTURE.md`](docs/REPO_STRUCTURE.md) for branch naming.
+## Research Foundation
+
+LOCI implements or extends the following research. See [`PAPERS.md`](PAPERS.md) for full citations.
+
+| ID | Title |
+|---|---|
+| 01 | LOCI: Longitudinal Observation and Compression Interface |
+| 02 | Reflection-on-Action: Label-Free Learning (LOCI e+r) |
+| 03 | Separate Fast-Decaying Memory Spectrum for System Thoughts |
+| 04 | Category-Adaptive Recall Depth (CARD) for Heat-Tiered Memory Systems |
+| 05 | Focused Retention: Goal-Conditioned Switched Decay |
+| 06 | Goal-Conditioned Switched Decay — Implementation |
+| 07 | LOCI ∞ — Infinity Memory Middleware |
+| 08 | Versioned Fact Storage with Source Trust |
+| 09 | LOCI Heat-Tiered Memory Architecture (Main Paper) |
+
+Zenodo DOI: [10.5281/zenodo.21188425](https://doi.org/10.5281/zenodo.21188425)
+
+---
+
+## Authorship and Credits
+
+See [`AUTHORS.md`](AUTHORS.md) for complete attribution.
+
+**Principal Architect:** Arko Sanyal (Billo Tech / Atlas BD)
+**Organization:** [Billo Tech](https://github.com/arko-sanyal-loci) | arko-sanyal-loci
+
+---
 
 ## License
 
-See [`LICENSE.md`](LICENSE.md). © 2026 Arko Sanyal, Billo Tech.
+See [`LICENSE.md`](LICENSE.md).
+
+© 2026 Arko Sanyal / Billo Tech. All rights reserved.
