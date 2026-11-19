@@ -107,6 +107,9 @@ END;
 class StorageEngine:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
+        parent = os.path.dirname(db_path)
+        if parent and db_path != ":memory:":
+            os.makedirs(parent, exist_ok=True)  # first run: ~/loci-memory-engine may not exist yet
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:

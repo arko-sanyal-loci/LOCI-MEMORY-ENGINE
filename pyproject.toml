@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loci-memory-engine"
+version = "0.2.0"
+description = "LOCI: heat-tiered, goal-conditioned persistent memory for long-horizon AI agents, with the Glassbox ledger and a secure coordination bus."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Arko Sanyal", email = "noreply@billo.tech" }]
+requires-python = ">=3.11"
+# The core engine and the stdio MCP server are standard library only.
+dependencies = []
+
+[project.optional-dependencies]
+# FastMCP binding for the coordination bus (coordination_bus/mcp_server.py)
+mcp = ["mcp>=1.2,<2"]  # mcp 2.x renamed FastMCP; coordination_bus targets 1.x
+# HTTP bridge (loci_engine/sovereign_bridge.py)
+bridge = ["fastapi>=0.110", "httpx>=0.27", "pydantic>=2"]
+# Ollama document RAG pipeline (rag/)
+rag = ["ollama>=0.3", "sqlite-vec>=0.1.6", "httpx>=0.27", "pypdf>=4", "langchain-core>=0.2", "langchain-text-splitters>=0.2"]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE"
+Papers = "https://github.com/arko-sanyal-loci/loci-card-papers"
+
+[tool.setuptools.packages.find]
+include = ["loci_engine*", "coordination_bus*", "rag*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

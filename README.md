@@ -1,4 +1,18 @@
-# loci-memory-engine
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/billo-tech-logo-dark.svg">
+  <img alt="Billo Tech" src="brand/billo-tech-logo-light.svg" width="520">
+</picture>
+
+[![CI](https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE/actions/workflows/ci.yml/badge.svg)](https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square)
+[![License: MIT](https://img.shields.io/badge/license-MIT-4F46E5?style=flat-square)](LICENSE)
+[![Billo Tech](https://img.shields.io/badge/Billo%20Tech-LOCI-06B6D4?style=flat-square)](https://github.com/billo-tech)
+
+</div>
+
+# LOCI Memory Engine
 
 **Longitudinal Observation and Compression Interface**
 **Locality-Optimized Contextual Intelligence**
@@ -7,6 +21,8 @@ A heat-tiered, goal-conditioned persistent memory substrate for long-horizon AI 
 
 > **This is the canonical repository.** All prior forks and experimental branches have been consolidated here.
 > See [`AUTHORS.md`](AUTHORS.md) for full credits and [`PAPERS.md`](PAPERS.md) for the research publications.
+>
+> **New here?** Start with the [User Guide](docs/USER_GUIDE.md), then the [Architecture overview](docs/ARCHITECTURE.md).
 
 ---
 
@@ -172,18 +188,16 @@ Queries are classified into one of four archetypes, each with a tuned recall dep
 ## Install
 
 ```bash
-git clone https://github.com/arko-sanyal-loci/loci-memory-engine
-cd loci-memory-engine
+git clone https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE
+cd LOCI-MEMORY-ENGINE
 python3 -m venv .venv
-.venv/bin/pip install -e .
+.venv/bin/pip install -e .            # core engine + stdio MCP server (standard library only)
+.venv/bin/pip install -e '.[dev]'     # + pytest
 ```
 
-**Optional — RAG pipeline** (requires [Ollama](https://ollama.com)):
-```bash
-.venv/bin/pip install -e '.[rag]'
-ollama pull nomic-embed-text
-ollama pull llama3.2
-```
+Optional extras: `mcp` (coordination-bus MCP binding), `bridge` (FastAPI HTTP bridge),
+`rag` (Ollama document pipeline; also needs `ollama pull nomic-embed-text` and
+`ollama pull llama3.2`).
 
 **Environment variables:**
 ```bash
@@ -198,11 +212,11 @@ export LOCI_GLASSBOX_PATH=~/loci-memory-engine/glassbox_ledger.jsonl
 ### Python API
 
 ```python
-from loci_engine.unified_core import LociCore
+from loci_engine.storage import StorageEngine
 
-loci = LociCore()
-loci.remember("user_gpu", "Intel Arc B70, 24GB VRAM, host: workstation-0")
-facts = loci.recall("what GPU does the user have")
+storage = StorageEngine()   # uses LOCI_DB_PATH
+storage.insert_fact("user_gpu", "hardware", "Intel Arc B70 Pro, 32GB VRAM, host: workstation-0")
+hits = storage.lexical_search("B70")
 ```
 
 ### MCP Server
@@ -211,9 +225,11 @@ facts = loci.recall("what GPU does the user have")
 LOCI_DB_PATH=./memory.db python -m loci_engine.mcp_server
 ```
 
-Exposes tools: `memory_remember`, `memory_recall`, `memory_add_fact`, `memory_get_facts`,
-`glassbox_learn`, `glassbox_recall`, `glassbox_verify_chain`, `sync_node_status`,
-`sync_anti_entropy`, `sync_add_peer`
+Speaks JSON-RPC 2.0 over stdio and exposes 34 tools, grouped as: memory
+(`memory_search_lexical`, `memory_ingest_fact`), Glassbox (`glassbox_learn`, `glassbox_recall`,
+`glassbox_verify`, `glassbox_stats`), agents, sessions, feedback, patience, GPU
+(`gpu_status`, `gpu_route`, ...) and node sync (`sync_node_status`, `sync_anti_entropy`,
+`sync_force`, `sync_add_peer`). The full list is in the [User Guide](docs/USER_GUIDE.md#mcp-server).
 
 ### Session Ingestion
 
@@ -242,13 +258,13 @@ python -m rag query "What does paper 04 say about recall depth?"
 ## Tests
 
 ```bash
-.venv/bin/pip install pytest
-pytest tests/ -q
+.venv/bin/pip install -e '.[dev,mcp,rag]'
+.venv/bin/python -m pytest
 ```
 
-All 145 tests pass. Test suite covers: StorageEngine, SessionIngester, CardRouter, Glassbox,
-EthicalCore, Ethics, NodeSyncDaemon, SessionContinuity, FeedbackPlatform, PatienceProtocol,
-LoopGuard, Sanitizer.
+190 tests pass and 5 are skipped (they need a running Ollama), as of 2026-11-19.
+`tests/test_e2e_smoke.py` runs every example in the User Guide from start to finish, including
+the MCP server over stdio, so the docs fail CI if they drift from the code.
 
 ---
 
@@ -265,8 +281,8 @@ LOCI supports multi-node operation via `NodeSyncDaemon`. Each node:
 # Start sync daemon
 systemctl start loci-sync
 
-# Or directly
-python -m loci_engine.node_sync_daemon --config config/nodes.env
+# Or directly (peers are read from ~/loci-memory-engine/config/nodes.env)
+python -m loci_engine.node_sync_daemon
 ```
 
 ---
@@ -288,17 +304,17 @@ python -m loci_engine.node_sync_daemon --config config/nodes.env
 
 LOCI implements or extends the following research. See [`PAPERS.md`](PAPERS.md) for full citations.
 
-| ID | Title |
-|---|---|
-| 01 | LOCI: Longitudinal Observation and Compression Interface |
-| 02 | Reflection-on-Action: Label-Free Learning (LOCI e+r) |
-| 03 | Separate Fast-Decaying Memory Spectrum for System Thoughts |
-| 04 | Category-Adaptive Recall Depth (CARD) for Heat-Tiered Memory Systems |
-| 05 | Focused Retention: Goal-Conditioned Switched Decay |
-| 06 | Goal-Conditioned Switched Decay — Implementation |
-| 07 | LOCI ∞ — Infinity Memory Middleware |
-| 08 | Versioned Fact Storage with Source Trust |
-| 09 | LOCI Heat-Tiered Memory Architecture (Main Paper) |
+| # | Title (short) | TD Commons |
+|---|---|---|
+| 01 | Forecasting Affective State from Interaction Streams (LOCI r+e) | 11089 |
+| 02 | Reflection-on-Action: Label-Free Learning (LOCI e+r) | 11090 |
+| 03 | A Separate, Fast-Decaying Memory Spectrum for a System's Own Thoughts | 11091 |
+| 04 | Category-Adaptive Recall Depth (CARD), validated on LongMemEval-500 | 10856 |
+| 05 | LOCI: A Heat-Decaying, Goal-Conditioned Memory Architecture | 11666 |
+| 06 | Focused Retention: Goal-Conditioned Switched Decay | 11092 |
+| 07 | LOCI ∞: Infinity Memory Middleware | 10806 |
+| 08 | LOCI Persistent AI Memory Engine: Versioned Exact-Fact Chains | 10843 |
+| 09 | Thermal Reasoning Substrate (preprint) | — |
 
 Zenodo DOI: [10.5281/zenodo.21188425](https://doi.org/10.5281/zenodo.21188425)
 
@@ -309,12 +325,25 @@ Zenodo DOI: [10.5281/zenodo.21188425](https://doi.org/10.5281/zenodo.21188425)
 See [`AUTHORS.md`](AUTHORS.md) for complete attribution.
 
 **Principal Architect:** Arko Sanyal (Billo Tech / Atlas BD)
-**Organization:** [Billo Tech](https://github.com/arko-sanyal-loci) | arko-sanyal-loci
+**Organization:** [Billo Tech](https://github.com/billo-tech)
+
+---
+
+## Documentation
+
+| Doc | What it covers |
+|---|---|
+| [User Guide](docs/USER_GUIDE.md) | Install, first memory, recall, Glassbox, MCP, RAG, node sync |
+| [Architecture](docs/ARCHITECTURE.md) | How the modules fit together and how LOCI relates to Arc and the Glassbox |
+| [Papers](PAPERS.md) | The nine papers, verified against the PDFs |
+| [Repository structure](docs/REPO_STRUCTURE.md) | Which repos are canonical, the Billo Tech org plan |
+| [Audit, 2026-11-19](docs/AUDIT-2026-11-19.md) | Start-to-finish pass: what was broken, what was removed, evidence |
+| [Brand](brand/BRAND.md) | Billo Tech logo files, colours and type |
 
 ---
 
 ## License
 
-See [`LICENSE.md`](LICENSE.md).
-
-© 2026 Arko Sanyal / Billo Tech. All rights reserved.
+[MIT](LICENSE) © 2026 Billo Tech / Arko Sanyal. How to credit the project:
+[`docs/ATTRIBUTION.md`](docs/ATTRIBUTION.md). The research papers are licensed separately
+(CC BY 4.0, see [`PAPERS.md`](PAPERS.md)).

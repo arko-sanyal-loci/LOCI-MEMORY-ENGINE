@@ -98,6 +98,7 @@ def test_mcp_task_flow_requires_review(shared_runtime, monkeypatch):
     approved = coordination_mcp.coordination_approve_review(task["task_id"])
     assert approved["state"] == "approved"
 
+@pytest.mark.skipif(coordination_mcp.mcp is None, reason="needs the optional 'mcp' extra (pip install -e '.[mcp]')")
 def test_mcp_tool_discovery():
     import asyncio
 

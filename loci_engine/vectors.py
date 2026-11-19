@@ -1,0 +1,218 @@
+import json
+import os
+import re
+import sqlite3
+import struct
+import time
+
+from loci_engine.heat import ALPHA_FLOOR, HEAT_CEILING, TIER_TAU, decay as _hyperbolic_decay, tier
+
+# Ported 2026-11-19 from the legacy loci-memory-engine-1 tree (rag/pipeline.py
+# imported this module but it was never brought over, so the canonical RAG
+# pipeline could not start). The legacy tree used a different heat law
+# (0.95/day exponential, hop increments); these two helpers express the same
+# read-time behaviour with the canonical law in heat.py: tier-aware hyperbolic
+# decay, bounded inside the open interval (ALPHA_FLOOR, HEAT_CEILING).
+
+DIRECT_ACCESS_INCREMENT = 0.5  # a direct read closes half the gap to the ceiling
+
+
+def decay(heat_value: float, days_elapsed: float) -> float:
+    aged = _hyperbolic_decay(heat_value, days_elapsed, TIER_TAU[tier(heat_value)])
+    return max(ALPHA_FLOOR, aged)
+
+
+def apply_increment(heat_value: float, hop: int = 0) -> float:
+    k = DIRECT_ACCESS_INCREMENT / (2 ** hop)
+    return min(HEAT_CEILING, heat_value + (HEAT_CEILING - heat_value) * k)
+
+EMBEDDING_DIM = 768
+RRF_K = 60
+
+
+def _to_blob(vector: list[float]) -> bytes:
+    return struct.pack(f"{len(vector)}f", *vector)
+
+
+def _to_fts5_query(text: str) -> str | None:
+    """Turn arbitrary user text into a safe FTS5 MATCH query.
+
+    Natural-language input (e.g. "What color is the sky?") contains characters
+    that are significant to FTS5's own query syntax (?, -, ^, *, (, ), :, etc.)
+    and raises `sqlite3.OperationalError: fts5: syntax error` if passed through
+    unescaped. Extracting word tokens and quoting each one neutralizes any
+    operator meaning; joining with OR keeps the search permissive (a BM25
+    relevance signal, not a strict all-terms-must-match filter) since most
+    natural questions contain stopwords that won't appear in every match.
+    """
+    tokens = re.findall(r"\w+", text)
+    if not tokens:
+        return None
+    return " OR ".join(f'"{token}"' for token in tokens)
+
+
+class VectorStore:
+    def __init__(self, path: str):
+        if os.path.isdir(path):
+            raise RuntimeError(
+                f"{path!r} is a directory (looks like a leftover Chroma store) — "
+                "VectorStore needs a file path; point RAG_CHROMA_DB_PATH at a new "
+                "file, e.g. ./loci.db"
+            )
+        self._conn = sqlite3.connect(path)
+        # See loci_engine/db.py's open_db() for why: readers shouldn't block on a
+        # concurrent writer once both model lanes touch the same store.
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.enable_load_extension(True)
+        import sqlite_vec
+
+        sqlite_vec.load(self._conn)
+        self._conn.enable_load_extension(False)
+        self._conn.executescript(
+            f"""
+            CREATE TABLE IF NOT EXISTS chunk_meta (
+                chunk_id TEXT PRIMARY KEY,
+                rowid_map INTEGER UNIQUE,
+                text TEXT NOT NULL,
+                metadata TEXT NOT NULL,
+                heat REAL DEFAULT 0.333,
+                last_used REAL
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
+                embedding float[{EMBEDDING_DIM}]
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
+                chunk_id UNINDEXED, text
+            );
+            """
+        )
+        # CREATE TABLE IF NOT EXISTS is a no-op against a chunk_meta table that
+        # already existed before heat/last_used were added (Plan 3 Task 3) - it
+        # does not retroactively add columns. Migrate any pre-existing database
+        # here so `heat` reads never hit "no such column" on a database created
+        # before this change.
+        existing_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(chunk_meta)")
+        }
+        if "heat" not in existing_columns:
+            self._conn.execute("ALTER TABLE chunk_meta ADD COLUMN heat REAL DEFAULT 0.333")
+        if "last_used" not in existing_columns:
+            self._conn.execute("ALTER TABLE chunk_meta ADD COLUMN last_used REAL")
+        self._conn.commit()
+
+    def add(
+        self,
+        ids: list[str],
+        embeddings: list[list[float]],
+        texts: list[str],
+        metadatas: list[dict],
+    ) -> None:
+        for chunk_id, embedding, text, metadata in zip(ids, embeddings, texts, metadatas):
+            existing = self._conn.execute(
+                "SELECT rowid_map FROM chunk_meta WHERE chunk_id = ?", (chunk_id,)
+            ).fetchone()
+            if existing is not None:
+                row_id = existing[0]
+                self._conn.execute(
+                    "UPDATE chunk_meta SET text = ?, metadata = ? WHERE chunk_id = ?",
+                    (text, json.dumps(metadata), chunk_id),
+                )
+                self._conn.execute(
+                    "UPDATE vec_chunks SET embedding = ? WHERE rowid = ?",
+                    (_to_blob(embedding), row_id),
+                )
+                self._conn.execute(
+                    "UPDATE fts_chunks SET text = ? WHERE chunk_id = ?", (text, chunk_id)
+                )
+            else:
+                cursor = self._conn.execute(
+                    "INSERT INTO chunk_meta (chunk_id, text, metadata, last_used) "
+                    "VALUES (?, ?, ?, ?)",
+                    (chunk_id, text, json.dumps(metadata), time.time()),
+                )
+                row_id = cursor.lastrowid
+                self._conn.execute(
+                    "UPDATE chunk_meta SET rowid_map = ? WHERE chunk_id = ?",
+                    (row_id, chunk_id),
+                )
+                self._conn.execute(
+                    "INSERT INTO vec_chunks (rowid, embedding) VALUES (?, ?)",
+                    (row_id, _to_blob(embedding)),
+                )
+                self._conn.execute(
+                    "INSERT INTO fts_chunks (chunk_id, text) VALUES (?, ?)", (chunk_id, text)
+                )
+        self._conn.commit()
+
+    def query(
+        self,
+        embedding: list[float],
+        top_k: int = 5,
+        query_text: str | None = None,
+    ) -> list[dict]:
+        fetch_k = max(top_k * 4, top_k)
+        dense_rows = self._conn.execute(
+            """
+            SELECT chunk_meta.chunk_id, vec_chunks.distance
+            FROM vec_chunks
+            JOIN chunk_meta ON chunk_meta.rowid_map = vec_chunks.rowid
+            WHERE embedding MATCH ? AND k = ?
+            ORDER BY distance
+            """,
+            (_to_blob(embedding), fetch_k),
+        ).fetchall()
+        dense_rank = {chunk_id: rank for rank, (chunk_id, _) in enumerate(dense_rows)}
+        dense_distance = {chunk_id: distance for chunk_id, distance in dense_rows}
+
+        sparse_rank: dict[str, int] = {}
+        fts5_query = _to_fts5_query(query_text) if query_text else None
+        if fts5_query:
+            sparse_rows = self._conn.execute(
+                """
+                SELECT chunk_id FROM fts_chunks
+                WHERE fts_chunks MATCH ? ORDER BY bm25(fts_chunks) LIMIT ?
+                """,
+                (fts5_query, fetch_k),
+            ).fetchall()
+            sparse_rank = {chunk_id: rank for rank, (chunk_id,) in enumerate(sparse_rows)}
+
+        all_ids = set(dense_rank) | set(sparse_rank)
+        scored = [
+            (
+                chunk_id,
+                (1.0 / (RRF_K + dense_rank[chunk_id] + 1) if chunk_id in dense_rank else 0.0)
+                + (1.0 / (RRF_K + sparse_rank[chunk_id] + 1) if chunk_id in sparse_rank else 0.0),
+            )
+            for chunk_id in all_ids
+        ]
+        scored.sort(key=lambda pair: (-pair[1], pair[0]))
+
+        now = time.time()
+        results = []
+        for chunk_id, _ in scored[:top_k]:
+            row = self._conn.execute(
+                "SELECT text, metadata, heat, last_used FROM chunk_meta WHERE chunk_id = ?",
+                (chunk_id,),
+            ).fetchone()
+            text, metadata_json, heat, last_used = row
+            days_elapsed = max(0.0, (now - (last_used or now)) / 86400.0)
+            decayed = decay(heat, days_elapsed)
+            new_heat = apply_increment(decayed, hop=0)
+            self._conn.execute(
+                "UPDATE chunk_meta SET heat = ?, last_used = ? WHERE chunk_id = ?",
+                (new_heat, now, chunk_id),
+            )
+            results.append(
+                {
+                    "id": chunk_id,
+                    "text": text,
+                    "metadata": json.loads(metadata_json),
+                    "distance": dense_distance.get(chunk_id),
+                    "heat": new_heat,
+                }
+            )
+        self._conn.commit()
+        return results
+
+    def close(self) -> None:
+        self._conn.close()

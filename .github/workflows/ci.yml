@@ -2,22 +2,28 @@ name: CI
 
 on:
   push:
-    branches: ["main", "reconcile"]
+    branches: ["main"]
   pull_request:
     branches: ["main"]
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: |
-          pip install pytest
-          pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        # No "|| true": a broken pyproject must fail the build, not be skipped.
+        run: pip install -e ".[dev,mcp,rag]"
+      - name: Byte-compile every module
+        run: python -m compileall -q loci_engine coordination_bus rag scripts
       - name: Run tests
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+        # pytest, not unittest: unittest discovery silently skipped the
+        # 42 pytest-style coordination_bus tests.
+        run: python -m pytest -q

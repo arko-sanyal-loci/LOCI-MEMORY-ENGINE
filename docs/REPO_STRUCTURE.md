@@ -44,13 +44,37 @@ Because `arko-sanyal-loci` is a user account, the profile README lives in a repo
 exactly `arko-sanyal-loci` (an organization would use a `.github` repository instead). The ready
 content is in [`docs/profile/README.md`](profile/README.md).
 
-### Optional: a real `billo-tech` GitHub organization
+### The `billo-tech` GitHub organization (created by Arko, 2026-11)
 
-If Billo Tech should appear as a company rather than a person, create a free GitHub organization
-(for example `billo-tech`) and transfer the three active repositories into it. GitHub redirects
-old URLs after a transfer, but clones, CI badges and any hard-coded `arko-sanyal-loci/...` links
-should still be updated afterwards. This is a bigger, outward-facing change, so it is listed as a
-choice rather than a step.
+The organization `billo-tech` exists. Its profile files are ready in
+[`org/billo-tech-dotgithub/`](../org/billo-tech-dotgithub/): profile README with the logo,
+organization-wide `CONTRIBUTING.md` and `SECURITY.md`. To finish:
+
+1. **(owner)** Install the Claude GitHub App on `billo-tech`, or create the public `.github`
+   repository yourself and copy that folder into it.
+2. **(owner)** Set the organization picture to `brand/billo-tech-mark.svg` (as PNG), the display
+   name to "Billo Tech" and the description to "The intelligence layer for AI systems: LOCI memory
+   and the Arc runtime."
+3. **(owner, optional)** Transfer `LOCI-MEMORY-ENGINE`, `arc` and `loci-card-papers` into
+   `billo-tech`. GitHub redirects the old URLs; update hard-coded links afterwards.
+
+Target layout once transferred:
+
+```
+billo-tech
+├── .github              organization profile and default community files
+├── LOCI-MEMORY-ENGINE   engine, coordination bus, Glassbox ledger, agents workspace
+├── arc                  local AI runtime and LOCI co-author
+└── loci-card-papers     published research (LOCI, CARD)
+```
+
+### Topics to set on each repository (owner, Settings → About)
+
+| Repo | Description | Topics |
+|---|---|---|
+| `LOCI-MEMORY-ENGINE` | Heat-tiered, goal-conditioned memory for AI agents, with the Glassbox ledger and an MCP server | `ai-memory`, `llm`, `agents`, `mcp`, `rag`, `sqlite`, `loci`, `glassbox` |
+| `arc` | Local AI runtime on RTX + Intel Arc GPUs with LOCI memory | `local-llm`, `gpu`, `intel-arc`, `cuda`, `fastapi`, `loci` |
+| `loci-card-papers` | Nine papers behind LOCI and CARD | `research`, `papers`, `ai-memory`, `defensive-publication`, `loci` |
 
 ## 3. Naming conventions
 
@@ -77,7 +101,7 @@ choice rather than a step.
 
 ## 5. Root-level cleanup in LOCI-MEMORY-ENGINE (not done yet, needs sign-off)
 
-- Seven `000N-*.patch` files at the root, four of them byte-identical duplicates (`_1`, `_2`
+- **Done 2026-11-19:** the four duplicates were removed; the three originals stay. Was: seven `000N-*.patch` files at the root, four of them byte-identical duplicates (`_1`, `_2`
   suffixes). Patch 0003 is fully applied on `main`; 0001 and 0002 no longer reverse cleanly, so
   they were applied and then edited further, or only partly applied. Proposed: delete the four
   duplicates now, and delete the three originals once someone confirms 0001 and 0002 landed.
@@ -85,9 +109,8 @@ choice rather than a step.
   `push_station0.sh`, `sync_to_remote.sh`, `gpu_governor.py`, ...). Proposed: move them to
   `scripts/ops/`. This touches paths that systemd units or local cron jobs may reference, so it
   should be checked on the machines first.
-- Two `*.stale-vulkan-*.bak` files in `architecture/` and `loci_engine/`. Proposed: delete.
-- `LICENSE.md` still contains the placeholder "[Specify your license here ...]". A license
-  needs to be chosen. **(owner)**
+- **Done 2026-11-19:** the two `*.stale-vulkan-*.bak` files were removed.
+- ~~`LICENSE.md` placeholder~~: done 2026-11-19, MIT `LICENSE` (see `docs/AUDIT-2026-11-19.md`).
 
 ## 6. Checklist
 
@@ -98,6 +121,8 @@ choice rather than a step.
 - [x] Profile README drafted (`docs/profile/README.md`)
 - [ ] **(owner)** Create the `arko-sanyal-loci/arko-sanyal-loci` repository for the profile README
 - [ ] **(owner)** Archive the five redirect repos; delete or archive the `docs` fork
-- [ ] **(owner)** Choose a license
+- [x] License: MIT for code, CC BY 4.0 for papers (2026-11-19)
 - [ ] Branch cleanup in `LOCI-MEMORY-ENGINE`
-- [ ] Root-level cleanup in `LOCI-MEMORY-ENGINE`
+- [x] Root-level duplicates removed (2026-11-19, evidence in `docs/AUDIT-2026-11-19.md`)
+- [ ] Move root ops scripts to `scripts/ops/` (check machines first)
+- [ ] **(owner)** Install `.github` profile in `billo-tech` and set topics
