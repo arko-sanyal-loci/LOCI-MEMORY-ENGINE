@@ -74,23 +74,31 @@ MEMORY_CLASSES: Dict[str, MemoryClass] = {
 }
 
 # ===========================================================================
-# B2 — Hardware Tier Schema (empirically validated by Spark, Nov 2026)
+# B2 — Hardware Tier Schema
 #
-# Tier boundaries and tau values come from heat_schema.py and were confirmed
-# by Spark's 300-trial parameter sweep (playground/fine_grained_sweep.py).
-# θ_HOT=0.700 is the VRAM working-set admission threshold (not the tier
-# boundary); tier classification uses the values below.
+# ONE threshold, not two. Until 2026-11-19 this module carried both
+# VRAM_ADMISSION_THRESHOLD = 0.700 (documented as "proven optimal") and
+# TIER_HOT_BOUNDARY = 0.800 — but nothing ever read the 0.700 constant, so
+# every real routing decision (tier(), storage.decay_stored_heat()) used 0.80,
+# the value the sweep says starves the working set. The two are now the same
+# constant. Evidence and caveats: docs/decisions/0001-hot-threshold-0.70.md and
+# research/trs_verification_package/ (raw sweep data, 500 trials per point).
 # ===========================================================================
 
 ALPHA_FLOOR: float = 0.0500   # Constant of Hope — heat never reaches zero
 HEAT_CEILING: float = 0.9999  # Open-interval ceiling — heat never reaches 1.0
-VRAM_ADMISSION_THRESHOLD: float = 0.700  # θ_HOT proven optimal by Spark sweep
 
-# Heat tier classification boundaries and their associated decay tau (days).
-# Tier tau is how quickly an item decays through that tier when unaccessed.
-TIER_HOT_BOUNDARY: float = 0.8000   # H >= this → HOT  (VRAM active working set)
+# θ_HOT: H >= this → HOT (VRAM active working set). At 0.80 the sweep admits
+# ~1.3 items (5.6% target recall); at 0.70 it admits ~10.5 (86.9% recall, 0
+# noise). See the decision record for why 0.70 rather than 0.725.
+TIER_HOT_BOUNDARY: float = 0.7000
+VRAM_ADMISSION_THRESHOLD: float = TIER_HOT_BOUNDARY  # kept as an alias for callers
 TIER_MILD_BOUNDARY: float = 0.3500  # H >= this → MILD (Host RAM arena)
                                      # H <  this → COLD (NVMe archival ledger)
+
+# Spreading-activation increments per graph hop (hop 0 = the item itself).
+# Halving per hop matches heat_schema.ThermalGraph (Delta H = r * 0.5**hop).
+HOP_INCREMENTS: Dict[int, float] = {0: 0.5, 1: 0.25, 2: 0.125, 3: 0.0625}
 
 TIER_TAU: Dict[str, float] = {
     "hot":  1.25,  # days — recency-sensitive; cools within ~1.25 days unaccessed
@@ -217,13 +225,34 @@ def decay(heat_value: float, elapsed: float, tau: float) -> float:
 def tier(heat_value: float) -> str:
     """Map a heat value to the canonical 3-tier hardware routing label.
 
-    Boundaries from heat_schema.py, validated by Spark's Nov 2026 sweep.
-    hot  → VRAM active working set  (H >= 0.8000)
-    mild → Host RAM SymLinkPrev     (H >= 0.3500)
-    cold → NVMe archival ledger     (H <  0.3500)
+    hot  → VRAM active working set  (H >= TIER_HOT_BOUNDARY, 0.70)
+    mild → Host RAM SymLinkPrev     (H >= TIER_MILD_BOUNDARY, 0.35)
+    cold → NVMe archival ledger     (H <  0.35)
     """
     if heat_value >= TIER_HOT_BOUNDARY:
         return "hot"
     if heat_value >= TIER_MILD_BOUNDARY:
         return "mild"
     return "cold"
+
+
+def tier_tau(heat_value: float) -> float:
+    """Decay τ (days) for the tier a heat value currently sits in."""
+    return TIER_TAU[tier(heat_value)]
+
+
+def reinforce(heat_value: float, hop: int = 0) -> float:
+    """Reinforce a scalar heat on access, staying inside the open interval.
+
+    ``H' = H + (1 − H) · k_hop`` where ``k_hop`` halves with each graph hop
+    (``HOP_INCREMENTS``). Hops beyond the table contribute nothing. The
+    result is clamped to ``(ALPHA_FLOOR, HEAT_CEILING)`` so repeated
+    reinforcement converges toward, but never reaches, 1.0 (A3).
+
+    This is the scalar companion of ``decay()``: ``vectors.VectorStore``
+    ages a chunk's heat with ``decay()`` and then reinforces it here every
+    time the chunk is retrieved.
+    """
+    k = HOP_INCREMENTS.get(int(hop), 0.0)
+    raised = heat_value + (1.0 - heat_value) * k
+    return max(ALPHA_FLOOR, min(HEAT_CEILING, raised))

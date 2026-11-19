@@ -12,6 +12,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 
+from loci_engine.heat import ALPHA_FLOOR
+from loci_engine.secrets_guard import redact
+
 DB_PATH = os.getenv("LOCI_DB_PATH", os.path.expanduser("~/loci-memory-engine/context2.db"))
 
 # Paper 08: asymmetric trust gate thresholds
@@ -116,6 +119,10 @@ class StorageEngine:
 
     def _init_db(self):
         with self._get_connection() as conn:
+            # WAL: readers never block on a concurrent writer. The README and
+            # architecture docs always said "SQLite WAL"; until 2026-11-19 the
+            # database was actually opened in the default rollback-journal mode.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(DDL_SCHEMA)
 
     @staticmethod
@@ -130,10 +137,13 @@ class StorageEngine:
         heat: float = 0.85,
         source_trust: float = 0.95,
         era: str = "mid",
-        alpha: float = 0.01,
+        alpha: float = ALPHA_FLOOR,
         supersedes_id: Optional[str] = None,
         source_actor: str = "kernel",
     ) -> str:
+        # Never persist credentials: this table is append-only and synced to
+        # every node, so a secret written here cannot be cleanly removed.
+        canonical_text = redact(canonical_text)
         now = self._utc_now()
         content_hash = hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
 
@@ -219,7 +229,7 @@ class StorageEngine:
 
         When tau_days is None (default), each item's tau is chosen by its
         current heat tier per the canonical hardware schema in heat.py:
-          HOT  (H >= 0.80): tau = 1.25 days
+          HOT  (H >= 0.70): tau = 1.25 days
           MILD (H >= 0.35): tau = 1.75 days
           COLD (H <  0.35): tau = 2.25 days
         Pass an explicit tau_days to override tier-aware selection.
