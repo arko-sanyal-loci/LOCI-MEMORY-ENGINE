@@ -1,30 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WORKSPACE="/home/loci/loci-memory-engine"
-cd "$WORKSPACE"
+case "${1:---check}" in
+  --check|--apply) mode=${1:---check} ;;
+  *) printf 'Usage: %s [--check|--apply]\n' "$0" >&2; exit 2 ;;
+esac
+[[ $# -le 1 ]] || exit 2
 
-# 1. Fetch remote tracking refs securely via SSH deploy key
-git fetch origin main --quiet
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+cd "${LOCI_WORKSPACE:-/home/loci/loci-memory-engine}"
 
-# 2. Extract upstream manifest hash
-REMOTE_HASH=$(git show origin/main:manifest.sha256 2>/dev/null | tr -d '[:space:]' || true)
-
-# 3. Calculate local engine tree hash
-LOCAL_HASH=$(find loci_engine -type f -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')
-
-# 4. Check for divergence or local working tree contamination
-DIRTY_COUNT=$(git status --porcelain | wc -l)
-
-if [ "$LOCAL_HASH" != "$REMOTE_HASH" ] || [ "$DIRTY_COUNT" -ne 0 ]; then
-  echo "Invariant violated (Local: $LOCAL_HASH, Remote: $REMOTE_HASH, Dirty: $DIRTY_COUNT). Restoring parity..."
-  git reset --hard origin/main
-  git clean -fd
-  
-  if [ -f "/run/user/$(id -u)/bus" ]; then
-    export XDG_RUNTIME_DIR=/run/user/$(id -u)
-    export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
-    systemctl --user restart loci-engine.service || true
+check_clean() {
+  local status
+  if [[ $(git symbolic-ref --quiet --short HEAD) != main ]]; then
+    printf 'Refusing synchronization outside the main branch.\n' >&2
+    exit 1
   fi
-  echo "Substrate parity restored to $(git rev-parse --short HEAD)"
+  status=$(git status --porcelain=v1 --untracked-files=all)
+  if [[ -n $status ]]; then
+    printf 'Refusing synchronization with staged, unstaged, or untracked work.\n' >&2
+    exit 1
+  fi
+}
+
+check_clean
+git fetch --quiet --no-tags --no-auto-maintenance origin refs/heads/main:refs/remotes/origin/main
+target=$(git rev-parse --verify refs/remotes/origin/main^{commit})
+current=$(git rev-parse --verify HEAD)
+if ! git merge-base --is-ancestor "$current" "$target"; then
+  printf 'Refusing synchronization because local main is ahead of or diverged from origin.\n' >&2
+  exit 1
 fi
+expected=$(git show "$target:manifest.sha256")
+if [[ ! $expected =~ ^[[:xdigit:]]{64}$ ]] ||
+   [[ $(python3 "$script_dir/scripts/engine_manifest.py" "$target") != "$expected" ]]; then
+  printf 'Refusing synchronization because the target engine manifest is invalid.\n' >&2
+  exit 1
+fi
+if [[ $mode == --check || $current == "$target" ]]; then
+  printf 'Verified synchronization target %s.\n' "$target"
+  exit 0
+fi
+check_clean
+git -c core.hooksPath=/dev/null merge --ff-only --no-overwrite-ignore "$target"
+printf 'Fast-forwarded to %s. Services require separate authorization.\n' "$target"

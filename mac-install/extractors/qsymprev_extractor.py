@@ -12,11 +12,12 @@ units, ticket IDs, IPs) from every session with:
 Emits a SIGNED patch appending JSONL to Memory/streams/qsymprev.jsonl.
 """
 from __future__ import annotations
-import hashlib, json, re, subprocess, sys, time
+import hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
+from secrets_guard import contains_secret, find_secrets
 
 HERE       = Path(__file__).resolve().parent
-DEVDRIVE   = Path("/Volumes/DevDrive")
+DEVDRIVE   = Path(os.environ.get("LOCI_DEVDRIVE", "/Volumes/DevDrive"))
 MEMORY     = DEVDRIVE / "Memory"
 STATE      = DEVDRIVE / "Memory-state"
 STATE_FILE = STATE / "qsymprev_last_seen.json"
@@ -101,16 +102,27 @@ def scan_session(jsonl: Path):
                 continue
             trust = USER_TRUST if role == "user" else ASSISTANT_TRUST
             src_ts = ts or mtime
+            safe_text = text
+            for _, secret in find_secrets(text):
+                safe_text = safe_text.replace(secret, " ")
+            for _, _, rx, vtype in FACT_RULES:
+                if vtype == "secret":
+                    safe_text = rx.sub(" ", safe_text)
             for entity, key, rx, vtype in FACT_RULES:
-                for m in rx.finditer(text):
+                for m in rx.finditer(text if vtype == "secret" else safe_text):
                     val = m.group(1) if m.groups() else m.group(0)
                     val = val.strip()
                     if len(val) > 300: continue
-                    yield {
+                    fact = {
                         "entity": entity, "key": key, "value": val, "value_type": vtype,
                         "source_trust": trust, "source_role": role,
                         "source_session": sid, "source_ts": src_ts,
                     }
+                    if vtype == "secret":
+                        digest = hashlib.sha256(val.encode("utf-8")).hexdigest()
+                        fact["value"] = f"<redacted:{entity}:{digest[:8]}>"
+                        fact["value_sha256"] = digest
+                    yield fact
 
 def main() -> None:
     last = load_last()
@@ -130,7 +142,10 @@ def main() -> None:
             prev = idx.get(k)
             # Version chain: only supersede if value differs AND newer OR trust is higher
             if prev:
-                if prev["value"] == fact["value"]:
+                same_value = prev["value"] == fact["value"]
+                if "value_sha256" in fact and "value_sha256" in prev:
+                    same_value = prev["value_sha256"] == fact["value_sha256"]
+                if same_value:
                     continue  # duplicate — skip
                 if fact["source_ts"] < prev["source_ts"] and fact["source_trust"] <= prev["source_trust"]:
                     continue  # stale; keep existing
@@ -156,16 +171,22 @@ def main() -> None:
     for r in new_records:
         lines.append(json.dumps(r, sort_keys=True))
     content = "\n".join(lines) + "\n"
+    last.update(new_seen)
+    if contains_secret(content) or contains_secret(json.dumps(last)):
+        sys.exit("[qsymprev] credential-like content detected before signing or writing")
 
     patch = {"signer": SIGNER, "target": TARGET_REL, "op": "append", "content": content}
     sign = HERE.parent / "scripts" / "sign_patch.py"
-    p = subprocess.run(["python3", str(sign)], input=json.dumps(patch), capture_output=True, text=True, check=True)
+    p = subprocess.run(["python3", str(sign)], input=json.dumps(patch), capture_output=True, text=True)
+    if p.returncode:
+        sys.exit("[qsymprev] signer refused the patch")
+    if contains_secret(p.stdout):
+        sys.exit("[qsymprev] credential-like content detected in the signed patch")
     writer = HERE.parent / "scripts" / "loci_writer.py"
     r = subprocess.run(["python3", str(writer)], input=p.stdout, capture_output=True, text=True)
     if r.returncode:
-        sys.exit(f"[qsymprev] writer refused: {r.stderr}")
+        sys.exit("[qsymprev] writer refused the patch")
 
-    last.update(new_seen)
     save_last(last)
     print(f"[qsymprev] {len(new_records)} new facts, {len(supersede_marks)} superseded", file=sys.stderr)
 
