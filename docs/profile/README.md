@@ -12,17 +12,17 @@
 ---
 
 **Billo Tech** builds **LOCI**, a heat-tiered, goal-conditioned memory architecture for AI agents,
-and **Arc**, the local runtime that puts it to work. Individual LOCI modules connect and unify
-under **The Glassbox**: a transparent, append-only knowledge compendium that any agent or model
-can learn from and contribute to.
+and **Arc**, the local runtime that puts it to work. LOCI's modules connect and unify under
+**The Glassbox**: a transparent, append-only knowledge compendium that any agent or model can
+learn from and contribute to.
 
 ## Projects
 
-| | Project | What it does |
+| | Repository | What it is |
 |---|---|---|
-| 🧠 | **[LOCI Memory Engine](https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE)** | The engine: heat-decaying memory tiers, Category-Adaptive Recall Depth (CARD), the Glassbox ledger, a governance and ethics gate, and a secure inter-agent coordination bus. |
-| ⚡ | **[Arc](https://github.com/arko-sanyal-loci/arc)** | A local AI runtime: runs models on your own GPUs with LOCI memory, dynamic context offload, and a chat interface. Arc is also the co-author of the LOCI project. |
-| 📄 | **[LOCI / CARD papers](https://github.com/arko-sanyal-loci/loci-card-papers)** | Nine published papers behind LOCI and CARD, released as defensive publications on Technical Disclosure Commons. |
+| 🧠 | **[LOCI Memory Engine](https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE)** | Heat-decaying memory tiers, Category-Adaptive Recall Depth (CARD), the Glassbox ledger, an ethics gate, and a secure inter-agent coordination bus. [User guide](https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE/blob/main/docs/USER_GUIDE.md) |
+| ⚡ | **[Arc](https://github.com/arko-sanyal-loci/arc)** | Local AI runtime: runs models on your own GPUs (RTX 5060 Ti + Intel Arc B70 Pro) with LOCI memory, tiered offload and a chat interface. Arc is also LOCI's co-author. |
+| 📄 | **[LOCI / CARD papers](https://github.com/arko-sanyal-loci/loci-card-papers)** | Nine papers: eight defensive publications on Technical Disclosure Commons (CC BY 4.0) and one preprint. [Citations](https://github.com/arko-sanyal-loci/loci-card-papers/blob/master/REFERENCES.md) |
 
 ## How it fits together
 
@@ -44,5 +44,5 @@ can learn from and contribute to.
 ---
 
 <div align="center">
-<sub>Founded by Arko Sanyal · Billo Tech</sub>
+<sub>Founded by <a href="https://github.com/arko-sanyal-loci">Arko Sanyal</a> · <a href="https://billo.tech">billo.tech</a> · Dhaka, Bangladesh</sub>
 </div>
