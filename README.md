@@ -20,6 +20,7 @@ LOCI gives AI agents persistent memory that behaves like a thermodynamic system:
 - **Hardware-tier routing:** Items route to VRAM / Host RAM / NVMe based on current heat
 - **Append-only lineage:** Every fact write is a new record; superseded records remain with valid-until timestamps
 - **Transparent audit:** The Glassbox append-only hash-chained ledger makes every agent learning inspectable
+- **Reflection without judgment:** omissions trigger source-linked process review and forward corrections; the system records no inferred motive or character score. See [`docs/principles/reflection-without-judgment.md`](docs/principles/reflection-without-judgment.md).
 
 ---
 
