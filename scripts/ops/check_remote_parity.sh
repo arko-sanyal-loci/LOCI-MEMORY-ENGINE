@@ -7,8 +7,10 @@ cd "$LOCI_REPO_DIR"
 REMOTE_PATH="$VPS_PATH"
 
 echo "=== Verifying Local vs Remote Parity ==="
-LOCAL_HASH=$(find loci_engine -type f ! -path '*/__pycache__*' ! -name '*.pyc' -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')
-REMOTE_HASH=$(ssh "$HOST" "su - loci -c 'cd $REMOTE_PATH && find loci_engine -type f ! -path \"*/__pycache__*\" ! -name \"*.pyc\" -exec sha256sum {} + | sort | sha256sum | awk \"{print \\\$1}\"'")
+# shellcheck source=engine_hash.sh
+source "$(dirname "${BASH_SOURCE[0]}")/engine_hash.sh"
+LOCAL_HASH=$(engine_hash)
+REMOTE_HASH=$(ssh "$HOST" "su - loci -c 'cd $REMOTE_PATH && LC_ALL=C find loci_engine -type f ! -path \"*/__pycache__*\" ! -name \"*.pyc\" -exec sha256sum {} + | LC_ALL=C sort | sha256sum | awk \"{print \\\$1}\"'")
 
 echo "Local  hash: $LOCAL_HASH"
 echo "Remote hash: $REMOTE_HASH"

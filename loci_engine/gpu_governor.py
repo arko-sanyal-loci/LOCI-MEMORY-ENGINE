@@ -63,6 +63,21 @@ GPU_SPECS = {
 }
 
 # ---------------------------------------------------------------------------
+# Inference endpoints — one per GPU
+#
+# Restored 2026-11-19. finalize_station0.sh replaced this module with a version
+# that dropped OLLAMA_ENDPOINTS and route_inference(), which mcp_server.py and
+# sovereign_bridge.py still import, so neither could start. The Arc lane now
+# runs llama.cpp (SYCL) rather than Ollama/Vulkan, so set LOCI_ARC_ENDPOINT to
+# wherever that server listens on your machine.
+# ---------------------------------------------------------------------------
+
+OLLAMA_ENDPOINTS = {
+    "nvidia_rtx_5060_ti": os.getenv("LOCI_NVIDIA_ENDPOINT", "http://127.0.0.1:11434"),
+    "intel_arc_b580_pro": os.getenv("LOCI_ARC_ENDPOINT", "http://127.0.0.1:11435"),
+}
+
+# ---------------------------------------------------------------------------
 # Task Queue — prevent pileup
 # ---------------------------------------------------------------------------
 
@@ -338,3 +353,40 @@ def get_model_allocation_plan() -> Dict[str, Any]:
             "principle": "Never exceed 95% VRAM, 95% TDP, or 2 concurrent tasks per GPU. Queue instead of pile.",
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Inference routing (restored 2026-11-19, see OLLAMA_ENDPOINTS above)
+# ---------------------------------------------------------------------------
+
+def route_inference(model: str, vram_estimate_mb: int = 0) -> Dict[str, Any]:
+    """Pick the inference endpoint for a model from current GPU state.
+
+    Priority:
+      1. NVIDIA, if it can take a task, is inside its safety margin and has the
+         VRAM headroom (when an estimate is given).
+      2. Arc, if its compute stack is installed and it can take a task.
+      3. NVIDIA anyway, if it can take a task (Arc not ready).
+      4. Neither: tell the caller to queue.
+    """
+    nvidia = get_nvidia_status()
+    arc = get_intel_arc_status()
+
+    nvidia_ok = (
+        nvidia.get("can_accept_task", False)
+        and nvidia.get("within_safety_margin", False)
+        and (vram_estimate_mb == 0 or nvidia.get("vram_headroom_mb", 0) >= vram_estimate_mb)
+    )
+    arc_ok = arc.get("compute_ready", False) and arc.get("can_accept_task", False)
+
+    if nvidia_ok:
+        return {"gpu": "nvidia_rtx_5060_ti", "endpoint": OLLAMA_ENDPOINTS["nvidia_rtx_5060_ti"],
+                "model": model, "reason": "NVIDIA has headroom"}
+    if arc_ok:
+        return {"gpu": "intel_arc_b580_pro", "endpoint": OLLAMA_ENDPOINTS["intel_arc_b580_pro"],
+                "model": model, "reason": "Routed to Arc: NVIDIA at capacity or short on VRAM"}
+    if nvidia.get("can_accept_task", False):
+        return {"gpu": "nvidia_rtx_5060_ti", "endpoint": OLLAMA_ENDPOINTS["nvidia_rtx_5060_ti"],
+                "model": model, "reason": "Fallback to NVIDIA: Arc compute not ready"}
+    return {"gpu": None, "endpoint": None, "model": model,
+            "reason": "Both GPUs at capacity. Queue the task.", "queue": True}
