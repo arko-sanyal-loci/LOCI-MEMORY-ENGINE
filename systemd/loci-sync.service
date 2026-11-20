@@ -2,7 +2,7 @@
 Description=Loci Memory Engine Real-Time Node Sync Daemon
 After=network.target loci-mcp.service
 Wants=loci-mcp.service
-Documentation=https://github.com/arko-sanyal2/loci-memory-engine
+Documentation=https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE
 
 [Service]
 Type=simple

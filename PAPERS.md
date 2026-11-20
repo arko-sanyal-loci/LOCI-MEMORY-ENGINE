@@ -149,9 +149,10 @@ ensure all LOCI mechanisms remain unpatentable by any party.
 
 ## Related Repositories (by Arko Sanyal)
 
-- **loci-card-papers** (`arko-sanyal/loci-card-papers`) — paper PDFs with one-paragraph summaries
-- **loci-coordination-bus** (`arko-sanyal/loci-coordination-bus`) — multi-agent event log + task
-  board (separate from this memory engine)
+- **[loci-card-papers](https://github.com/arko-sanyal-loci/loci-card-papers)** — paper PDFs with one-paragraph summaries (canonical papers repo)
+- **[arc](https://github.com/arko-sanyal-loci/arc)** — the Arc local runtime that consumes this engine
+- The coordination bus now lives in this repository (`coordination_bus/`); the old
+  `loci-coordination-bus` repositories are redirect-only.
 
 ---
 

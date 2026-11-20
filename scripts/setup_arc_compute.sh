@@ -3,12 +3,16 @@
 # Run with: sudo bash scripts/setup_arc_compute.sh
 set -euo pipefail
 
+# The account that will run the Arc Ollama service (defaults to the sudo caller).
+LOCI_USER="${LOCI_USER:-${SUDO_USER:-$(id -un)}}"
+LOCI_HOME="$(getent passwd "$LOCI_USER" | cut -d: -f6)"
+
 echo "=== LOCI Intel Arc B70 Pro Sparkle Compute Setup ==="
 echo ""
 
 # 1. Add user to render + video groups for DRI access
-echo "[1/4] Adding arko-sanyal to render and video groups..."
-usermod -aG render,video arko-sanyal
+echo "[1/4] Adding $LOCI_USER to render and video groups..."
+usermod -aG render,video "$LOCI_USER"
 echo "  Done. Groups: render, video"
 
 # 2. Install Intel OpenCL runtime (for non-Ollama compute like clinfo)
@@ -19,14 +23,14 @@ echo "  Done."
 # 3. Verify Vulkan sees the Battlemage GPU
 echo "[3/4] Checking Vulkan enumeration..."
 if command -v vulkaninfo &>/dev/null; then
-    su - arko-sanyal -c "vulkaninfo --summary 2>&1 | grep -i 'deviceName\|driverName'" || echo "  (vulkaninfo may need re-login for group membership)"
+    su - "$LOCI_USER" -c "vulkaninfo --summary 2>&1 | grep -i 'deviceName\|driverName'" || echo "  (vulkaninfo may need re-login for group membership)"
 else
     echo "  vulkaninfo not installed — install vulkan-tools for diagnostics"
 fi
 
 # 4. Create systemd unit for Arc Ollama instance
 echo "[4/4] Installing loci-ollama-arc systemd service..."
-cat > /etc/systemd/system/loci-ollama-arc.service <<'UNIT'
+cat > /etc/systemd/system/loci-ollama-arc.service <<UNIT
 [Unit]
 Description=LOCI Ollama — Intel Arc B70 Pro (Vulkan)
 After=network.target
@@ -34,9 +38,9 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=arko-sanyal
+User=$LOCI_USER
 Environment=OLLAMA_HOST=127.0.0.1:11435
-Environment=OLLAMA_MODELS=/home/arko-sanyal/.ollama/models
+Environment=OLLAMA_MODELS=$LOCI_HOME/.ollama/models
 Environment=OLLAMA_MAX_LOADED_MODELS=1
 Environment=OLLAMA_NUM_PARALLEL=1
 Environment=OLLAMA_CONTEXT_LENGTH=8192

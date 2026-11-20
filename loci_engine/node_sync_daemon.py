@@ -12,14 +12,12 @@ Architecture:
 """
 
 import os
-import sys
 import json
 import time
 import sqlite3
 import hashlib
 import socket
 import threading
-import struct
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timezone
 
@@ -407,8 +405,13 @@ class NodeSyncDaemon:
 
 
 def load_peers_from_env(config_path: str = "") -> List[Tuple[str, int]]:
+    """Read peer addresses from config/nodes.env (git-ignored; see the
+    .example template). Path order: argument, $LOCI_NODES_ENV, then
+    config/nodes.env next to this package."""
     if not config_path:
-        config_path = os.path.expanduser("~/loci-memory-engine/config/nodes.env")
+        config_path = os.environ.get("LOCI_NODES_ENV") or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "nodes.env"
+        )
 
     peers = []
     if not os.path.exists(config_path):

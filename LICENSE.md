@@ -1,69 +1,45 @@
-# License & Terms of Use
+# License
 
-## LOCI-MEMORY-ENGINE Project License
+## MIT License
 
-© 2026 Arko Sanyal & Contributors
+Copyright (c) 2026 Arko Sanyal (Billo Tech / Atlas BD)
 
-All rights reserved.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-## Terms
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-This project is distributed under **[Specify your license here, e.g., MIT, Apache 2.0, GPL, Commercial, Proprietary]**.
-
-### Attribution Requirements
-
-When using, redistributing, or building upon this project, you **must**:
-
-1. Retain this license notice and the copyright statement
-2. Credit Arko Sanyal as the principal author
-3. Acknowledge all AI/agent contributors as listed in `AUTHORSHIP.md`
-4. Reference the hash-chained credit ledger at `ledger/credit_ledger.jsonl`
-5. Include a link to the original repository: https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE
-
-### Example Attribution
-
-```
-Based on LOCI-MEMORY-ENGINE
-© 2026 Arko Sanyal & Contributors
-Licensed under [LICENSE_TYPE]
-Contributors: Claude Opus 4.6, Claude Sonnet 5
-Credit ledger: https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE/blob/main/ledger/credit_ledger.jsonl
-```
-
-## Usage Restrictions
-
-- **Commercial use:** [Specify terms — permitted/restricted/requires permission]
-- **Modifications:** [Specify terms — permitted/required to be open-source/restricted]
-- **Distribution:** [Specify terms — permitted/restricted/conditional]
-- **Patent rights:** [Specify terms — if applicable]
-
-## Disclaimer
-
-THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
-
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-## Server Configuration & Deployment
-
-Sensitive server configuration, deployment guides, and operational details are **not included in this repository**. These are posted to:
-
-**https://billo.tech/agents**
-
-This is intentional and by design — it ensures:
-- Public repository safety (no exposed infrastructure)
-- Secure access to operational details (authenticated users only)
-- Centralized, updateable configuration management
-- Clear separation between code (open) and ops (private)
-
-## Questions or Licensing Inquiries
-
-For licensing questions, special use cases, or commercial inquiries, please contact:
-
-- Principal Author: Arko Sanyal
-- Repository: https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE
-- Server info: https://billo.tech/agents
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ---
 
-**Last Updated:** 2026-11-11  
-**Version:** 1.0
+## Third-party components
+
+### Ptyxis (AGPL-3.0)
+
+The empirical benchmark code in research/trs_verification_package/ derives
+from the Ptyxis collective probe framework (pyxis-app/pyxis, AGPL-3.0).
+That directory is not distributed as part of the installable Python package.
+If you distribute a modified version of those files, the AGPL-3.0 terms apply.
+
+The rest of this repository (all files outside research/) is MIT-licensed.
+
+---
+
+## Patent notice
+
+Certain architectural ideas described in this repository are subject to patent
+consideration by Arko Sanyal / Atlas BD. A US provisional or non-provisional
+patent application is anticipated before July 4, 2027.
+Nothing in this MIT license grants any patent rights.

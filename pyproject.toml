@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loci-memory-engine"
+version = "0.3.0"
+description = "LOCI memory engine: heat-tiered memory, hybrid RAG store, coordination bus and the Glassbox knowledge layer."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE.md" }
+authors = [{ name = "Arko Sanyal (Billo Tech)" }]
+dependencies = [
+  "httpx>=0.27",
+  "ollama>=0.3",
+  "sqlite-vec>=0.1.6",
+  "pypdf>=4.0",
+  "langchain-core>=0.2",
+  "langchain-text-splitters>=0.2",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+bridge = ["fastapi>=0.110", "pydantic>=2"]
+dev = ["pytest>=8", "numpy>=1.26", "pyflakes>=3"]
+
+[tool.setuptools.packages.find]
+include = ["loci_engine*", "rag*", "coordination_bus*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

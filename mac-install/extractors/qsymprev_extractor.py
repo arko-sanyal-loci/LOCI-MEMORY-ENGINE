@@ -10,13 +10,30 @@ units, ticket IDs, IPs) from every session with:
     record is archived and linked via prev_hash → new record wins.
 
 Emits a SIGNED patch appending JSONL to Memory/streams/qsymprev.jsonl.
+
+SECRETS ARE NEVER STORED (fixed 2026-11-19)
+-------------------------------------------
+Earlier versions wrote every matched API key (Anthropic, xAI, OpenAI-style,
+GitHub, AWS) verbatim into qsymprev.jsonl — an append-only, signed stream,
+so a leaked key could never be cleanly removed. Facts of value_type
+"secret" are now stored as a fingerprint only:
+
+    value       = "<redacted:api_key.anthropic:1a2b3c4d>"
+    value_sha256 = full SHA-256 of the secret (for "same key / key changed")
+
+The version chain still works (a rotated key gets a new fingerprint and
+supersedes the old record), but nothing usable as a credential is written.
+If an existing qsymprev.jsonl was produced by an older version, treat every
+key in it as exposed: rotate the keys, then rebuild the stream.
+
+Set LOCI_DEVDRIVE to point at the memory volume (default /Volumes/DevDrive).
 """
 from __future__ import annotations
-import hashlib, json, re, subprocess, sys, time
+import hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
 
 HERE       = Path(__file__).resolve().parent
-DEVDRIVE   = Path("/Volumes/DevDrive")
+DEVDRIVE   = Path(os.environ.get("LOCI_DEVDRIVE", "/Volumes/DevDrive"))
 MEMORY     = DEVDRIVE / "Memory"
 STATE      = DEVDRIVE / "Memory-state"
 STATE_FILE = STATE / "qsymprev_last_seen.json"
@@ -42,6 +59,11 @@ FACT_RULES = [
     ("commit.git",         "sha",      re.compile(r"\b[0-9a-f]{7,40}\b"),                     "string"),
     ("amount.bdt",         "bdt",      re.compile(r"BDT\s*[\d,]+"),                           "money"),
 ]
+
+def redact_secret(entity: str, raw: str) -> tuple[str, str]:
+    """(placeholder, sha256) for a secret value. Only these are ever stored."""
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"<redacted:{entity}:{digest[:8]}>", digest
 
 USER_TRUST      = 1.0
 ASSISTANT_TRUST = 0.5
@@ -106,11 +128,14 @@ def scan_session(jsonl: Path):
                     val = m.group(1) if m.groups() else m.group(0)
                     val = val.strip()
                     if len(val) > 300: continue
-                    yield {
+                    fact = {
                         "entity": entity, "key": key, "value": val, "value_type": vtype,
                         "source_trust": trust, "source_role": role,
                         "source_session": sid, "source_ts": src_ts,
                     }
+                    if vtype == "secret":
+                        fact["value"], fact["value_sha256"] = redact_secret(entity, val)
+                    yield fact
 
 def main() -> None:
     last = load_last()

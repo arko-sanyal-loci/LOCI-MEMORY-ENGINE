@@ -27,7 +27,7 @@ import hashlib, json, math, os, re, sqlite3, subprocess, sys, time
 from pathlib import Path
 
 HERE       = Path(__file__).resolve().parent
-DEVDRIVE   = Path("/Volumes/DevDrive")
+DEVDRIVE   = Path(os.environ.get("LOCI_DEVDRIVE", "/Volumes/DevDrive"))
 MEMORY     = DEVDRIVE / "Memory"
 STATE      = DEVDRIVE / "Memory-state"
 DB_PATH    = DEVDRIVE / ".loci-facts.db"

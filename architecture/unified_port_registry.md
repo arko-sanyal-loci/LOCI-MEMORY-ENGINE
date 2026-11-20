@@ -43,7 +43,7 @@
 |------|---------|--------|
 | — | No services exposed | Laptop SSH'd into workstation but runs nothing reachable |
 
-### VPS (srv1775801.hstgr.cloud)
+### VPS (<VPS_HOST>)
 | Port | Service | Status |
 |------|---------|--------|
 | — | Unknown | Alive (56ms ping) but SSH key denied |

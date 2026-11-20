@@ -2,22 +2,33 @@ name: CI
 
 on:
   push:
-    branches: ["main", "reconcile"]
+    branches: ["main"]
   pull_request:
     branches: ["main"]
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Install dependencies
+          python-version: ${{ matrix.python-version }}
+      - name: Install package with dev and MCP extras
+        run: pip install -e ".[dev,mcp]"
+      - name: Lint (undefined names only)
+        run: python -m pyflakes loci_engine rag coordination_bus | grep -E "undefined name|syntax" && exit 1 || true
+      - name: Run tests (pytest also collects the unittest suites)
+        run: python -m pytest -q
+      - name: Verify sealed TRS package and re-run its benchmarks
+        working-directory: research/trs_verification_package
         run: |
-          pip install pytest
-          pip install -e ".[dev]" 2>/dev/null || pip install -e . 2>/dev/null || true
-      - name: Run tests
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+          sha256sum -c SHA256SUMS_SEALED --ignore-missing
+          # verify_all.py rewrites data/raw_sweep_results.json (timestamp, latency),
+          # so run it on a copy; it is sealed and always exits 0, so check its tally.
+          cp -r . "$RUNNER_TEMP/trs" && cd "$RUNNER_TEMP/trs"
+          python verify_all.py | tee verify.log
+          grep -Eq 'COMPLETE: ([0-9]+)/\1 PASSED' verify.log

@@ -18,7 +18,6 @@ No hidden channels — all feedback visible in the Glassbox.
 
 import json
 import os
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -164,12 +163,10 @@ def respond_to_feedback(
     """
     entries = _read_feedback()
     found = None
-    found_idx = None
 
     for idx, e in enumerate(entries):
         if e.get("id") == feedback_id:
             found = e
-            found_idx = idx
             break
 
     if not found:

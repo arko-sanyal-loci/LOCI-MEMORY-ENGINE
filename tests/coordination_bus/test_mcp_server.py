@@ -101,6 +101,12 @@ def test_mcp_task_flow_requires_review(shared_runtime, monkeypatch):
 def test_mcp_tool_discovery():
     import asyncio
 
+    # mcp v2 changed the FastMCP API; skip if the installed version is incompatible
+    try:
+        from mcp.server.fastmcp import FastMCP  # noqa: F401
+    except (ImportError, ModuleNotFoundError):
+        pytest.skip("mcp<2 required (FastMCP API): pip install 'mcp<2'")
+
     assert coordination_mcp.mcp is not None
     tools = asyncio.run(coordination_mcp.mcp.list_tools())
     names = {tool.name for tool in tools}

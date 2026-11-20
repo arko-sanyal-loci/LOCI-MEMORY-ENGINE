@@ -1,7 +1,7 @@
 [Unit]
 Description=Loci Memory Engine MCP Daemon
 After=network.target local-fs.target
-Documentation=https://github.com/arko-sanyal2/loci-memory-engine
+Documentation=https://github.com/arko-sanyal-loci/LOCI-MEMORY-ENGINE
 
 [Service]
 Type=simple

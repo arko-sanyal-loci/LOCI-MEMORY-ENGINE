@@ -9,9 +9,14 @@ Zero external dependencies beyond standard library math.
 import math
 from typing import Dict, List, Any
 
+from loci_engine.heat import TIER_HOT_BOUNDARY, TIER_MILD_BOUNDARY
+
+
 class ThermodynamicNeighborhoodEngine:
-    TIER_HOT_THRESHOLD = 0.70
-    TIER_MILD_THRESHOLD = 0.25
+    # Single source of truth: heat.py. This class used to hard-code its own
+    # MILD boundary (0.25) that disagreed with heat.py's 0.35.
+    TIER_HOT_THRESHOLD = TIER_HOT_BOUNDARY
+    TIER_MILD_THRESHOLD = TIER_MILD_BOUNDARY
     DEFAULT_SIGMA = 0.32  # Spatial dispersion radius
 
     @classmethod

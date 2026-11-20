@@ -14,9 +14,10 @@ import hashlib
 import json
 import os
 import sqlite3
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from loci_engine.secrets_guard import redact
 
 GLASSBOX_PATH = os.getenv(
     "LOCI_GLASSBOX_PATH",
@@ -136,6 +137,9 @@ def glassbox_learn(
     Categories: observation, insight, correction, principle, discovery,
                 warning, question, synthesis, calibration
     """
+    # The ledger is append-only and hash-chained: a secret written here is
+    # permanent. Redact before hashing so the chain covers the safe text.
+    content = redact(content)
     ts = _utc_iso()
     prev_hash = _last_hash()
     _partial = {

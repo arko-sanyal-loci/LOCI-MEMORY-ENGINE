@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$HOME/loci-memory-engine"
+REPO_DIR="${LOCI_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONFIG_FILE="$REPO_DIR/config/nodes.env"
 
 if [ -f "$CONFIG_FILE" ]; then
