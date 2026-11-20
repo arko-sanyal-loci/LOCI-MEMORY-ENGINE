@@ -2,6 +2,8 @@
 set -euo pipefail
 
 # Runs on a mirror node (e.g. the VPS) to restore parity with origin/main.
+# WARNING: runs `git reset --hard` and `git clean -fd` on drift. Never run it
+# on a checkout you edit.
 source "$(dirname "${BASH_SOURCE[0]}")/_nodes.sh"
 WORKSPACE="${LOCI_SYNC_WORKSPACE:-$LOCI_REPO_DIR}"
 cd "$WORKSPACE"
@@ -12,8 +14,11 @@ git fetch origin main --quiet
 # 2. Extract upstream manifest hash
 REMOTE_HASH=$(git show origin/main:manifest.sha256 2>/dev/null | tr -d '[:space:]' || true)
 
-# 3. Calculate local engine tree hash
-LOCAL_HASH=$(find loci_engine -type f -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')
+# 3. Calculate local engine tree hash (same definition as update_manifest.sh;
+#    bytecode caches excluded, or every node looks diverged forever)
+# shellcheck source=engine_hash.sh
+source "$(dirname "${BASH_SOURCE[0]}")/engine_hash.sh"
+LOCAL_HASH=$(engine_hash)
 
 # 4. Check for divergence or local working tree contamination
 DIRTY_COUNT=$(git status --porcelain | wc -l)

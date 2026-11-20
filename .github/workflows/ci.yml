@@ -17,8 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install package with dev and MCP extras
-        run: pip install -e ".[dev,mcp]"
+      - name: Install package with dev, MCP and bridge extras
+        run: pip install -e ".[dev,mcp,bridge]"
       - name: Lint (undefined names only)
         run: python -m pyflakes loci_engine rag coordination_bus | grep -E "undefined name|syntax" && exit 1 || true
       - name: Run tests (pytest also collects the unittest suites)
