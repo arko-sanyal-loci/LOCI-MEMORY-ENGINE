@@ -113,6 +113,10 @@ LOCI gives AI agents persistent memory that behaves like a thermodynamic system:
 | `loci_engine/secrets_guard.py` | `redact()` / `contains_secret()` — 8-family secret scanner applied at every write | — |
 | `coordination_bus/` | HMAC-authenticated inter-agent message bus + MCP server | — |
 
+For an approachable explanation of live conversation deltas, the stream-extractor
+idea, per-agent reflection, and how to give useful LOCI feedback, see
+[`docs/STREAMS-AND-LOCI-FEEDBACK.md`](docs/STREAMS-AND-LOCI-FEEDBACK.md).
+
 ---
 
 ## Heat Thermodynamics
@@ -251,6 +255,9 @@ versioned, categorical environmental and user-profile events only after
 per-scope consent. It rejects raw audio, video, transcripts, free text and
 precise locations. Consent defaults to off; heatmap output is derived from the
 append-only event history and can be validated with `pytest tests/test_journal.py`.
+
+For the agent swarm Director's delta path, heartbeat aggregation, and clock
+safety rules, see [Director delta feed and clock safety](docs/DIRECTOR-DELTA-AND-TIME.md).
 
 ---
 
