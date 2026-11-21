@@ -87,6 +87,11 @@ Explicit statement: Claude is an AI assistant (Anthropic). These session impleme
 record code produced through Claude Code and are distinct from the human and AI co-inventor
 credits above, which relate to the underlying intellectual property and published research.
 
+**OpenAI Codex**
+Session implementation of the opt-in, hash-chained RAG appendix journal, its consent/version
+model, categorical heatmap rollups, tests, and user documentation (November 2026). This is an
+implementation credit and does not claim co-inventorship of the underlying intellectual property.
+
 ---
 
 ## Repository Consolidation History
