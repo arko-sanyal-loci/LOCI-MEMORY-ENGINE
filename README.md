@@ -103,6 +103,7 @@ LOCI gives AI agents persistent memory that behaves like a thermodynamic system:
 | `loci_engine/thermal_gradient.py` | Multi-node heat gradient propagation | — |
 | `loci_engine/threads.py` | Thread-safe memory access primitives | — |
 | `rag/` | Ollama-based document ingestion + CARD-categorized RAG pipeline | 04 |
+| `rag/journal.py` | Consent-gated, append-only categorical profile journal with heatmap rollups | — |
 | `loci_engine/vectors.py` | sqlite-vec + FTS5 hybrid RAG store; RRF(k=60) fusion; heat persistence per chunk | — |
 | `loci_engine/db.py` | `open_db()` — WAL + FK-enforced connection factory | — |
 | `loci_engine/provenance.py` | `resolve_trust()`, `UserStated`, Bayesian evidence weighting | — |
@@ -244,6 +245,12 @@ python -m rag ingest --data-dir ./docs
 # Query with CARD-adaptive depth
 python -m rag query "What does paper 04 say about recall depth?"
 ```
+
+The separate [RAG appendix journal](docs/RAG-APPENDIX-JOURNAL.md) records
+versioned, categorical environmental and user-profile events only after
+per-scope consent. It rejects raw audio, video, transcripts, free text and
+precise locations. Consent defaults to off; heatmap output is derived from the
+append-only event history and can be validated with `pytest tests/test_journal.py`.
 
 ---
 
