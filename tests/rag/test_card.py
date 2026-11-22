@@ -79,3 +79,48 @@ def test_apply_ranking_strategy_knowledge_update_tolerates_missing_heat():
     ordered = apply_ranking_strategy("knowledge_update", results)
 
     assert len(ordered) == 2
+
+
+def test_hybrid_ranking_prefers_user_ground_truth_before_heat():
+    results = [
+        {"text": "inferred-hot", "heat": 0.9, "metadata": {}},
+        {
+            "text": "user-ground-truth",
+            "heat": 0.1,
+            "metadata": {"provenance": "user_stated"},
+        },
+    ]
+
+    ordered = apply_ranking_strategy("information_extraction", results)
+
+    assert [r["text"] for r in ordered] == ["user-ground-truth", "inferred-hot"]
+
+
+def test_hybrid_ranking_uses_trs_stream_score_after_ground_truth():
+    results = [
+        {
+            "text": "weak-stream",
+            "heat": 0.9,
+            "metadata": {"trs_final_package": {"streams": {"I": {"score": 0.1}}}},
+        },
+        {
+            "text": "strong-stream",
+            "heat": 0.1,
+            "metadata": {"trs_final_package": {"streams": {"I": {"score": 0.8}}}},
+        },
+    ]
+
+    ordered = apply_ranking_strategy("multi_session_reasoning", results)
+
+    assert [r["text"] for r in ordered] == ["strong-stream", "weak-stream"]
+
+
+def test_temporal_hybrid_keeps_chronology_when_signals_match():
+    results = [
+        {"text": "later", "metadata": {"creationdate": "2026-06-01"}},
+        {"text": "earlier", "metadata": {"creationdate": "2026-01-01"}},
+    ]
+
+    ordered = apply_ranking_strategy("temporal_reasoning", results)
+
+    assert [r["text"] for r in ordered] == ["earlier", "later"]
