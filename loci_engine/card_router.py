@@ -9,7 +9,7 @@ Implements the 4 core archetypes from LongMemEval-500:
 """
 
 import math
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Mapping, Optional, Sequence
 
 class CardRouter:
     ARCHETYPE_CONFIGS = {
@@ -56,11 +56,31 @@ class CardRouter:
         query: str,
         candidates: List[Dict[str, Any]],
         active_embedding: Optional[List[float]] = None,
-        sigma: float = 0.32
+        sigma: float = 0.32,
+        category_hint: Optional[str] = None,
+        stream_context: Optional[Sequence[Mapping[str, Any]]] = None,
+        tiebreaker_context: Optional[Mapping[str, float]] = None,
     ) -> Dict[str, Any]:
-        archetype = cls.classify_archetype(query)
+        archetype = category_hint if category_hint in cls.ARCHETYPE_CONFIGS else cls.classify_archetype(query)
         cfg = cls.ARCHETYPE_CONFIGS[archetype]
         depth_k = cfg["depth_k"]
+        stream_context = stream_context or ()
+        tiebreaker_context = tiebreaker_context or {}
+
+        stream_scores: Dict[str, float] = {}
+        for context in stream_context:
+            item_id = context.get("id")
+            if not item_id:
+                continue
+            try:
+                score = max(0.0, min(1.0, float(context.get("score", 0.0))))
+                hop = max(1, int(context.get("hop", 1)))
+            except (TypeError, ValueError):
+                continue
+            stream_scores[item_id] = max(
+                stream_scores.get(item_id, 0.0),
+                score * (0.5 if hop == 1 else 0.25 if hop == 2 else 0.125),
+            )
 
         # 1. Calculate continuous thermal gradient if semantic vector is present
         processed_pool = []
@@ -82,16 +102,36 @@ class CardRouter:
                 radiated_heat = conduction * rel_weight * 0.85
 
             item["effective_heat"] = min(1.0, round(base_temp + radiated_heat, 6))
+            item["stream_score"] = round(min(1.0, stream_scores.get(item.get("id"), 0.0)), 6)
+            try:
+                tie_score = float(tiebreaker_context.get(item.get("id"), 0.0))
+            except (TypeError, ValueError):
+                tie_score = 0.0
+            item["tiebreaker_score"] = round(max(-1.0, min(1.0, tie_score)), 6)
             processed_pool.append(item)
+
+        def rank_with_bounded_context(pool: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """Use context only to resolve close heat scores, never hot/cold flips."""
+            ranked = sorted(
+                pool,
+                key=lambda x: (x["effective_heat"], x.get("timestamp", 0), x.get("id", "")),
+                reverse=True,
+            )
+            for index in range(len(ranked) - 1):
+                current = ranked[index]
+                following = ranked[index + 1]
+                if current["effective_heat"] - following["effective_heat"] > 0.05:
+                    continue
+                current_context = current["stream_score"] + 0.05 * current["tiebreaker_score"]
+                following_context = following["stream_score"] + 0.05 * following["tiebreaker_score"]
+                if following_context > current_context:
+                    ranked[index], ranked[index + 1] = following, current
+            return ranked
 
         # 2. Apply archetype-specific ranking & filtering
         if cfg["strategy"] == "recency_tiebreak":
             # Sort by heat, break ties by timestamp
-            sorted_pool = sorted(
-                processed_pool,
-                key=lambda x: (x["effective_heat"], x.get("timestamp", 0)),
-                reverse=True
-            )
+            sorted_pool = rank_with_bounded_context(processed_pool)
             # Retain only the latest valid version per entity_id
             seen_entities = set()
             selected = []
@@ -108,12 +148,12 @@ class CardRouter:
 
         elif cfg["strategy"] == "temporal_ordered":
             # Select top-K hottest, then sort chronologically
-            top_k_pool = sorted(processed_pool, key=lambda x: x["effective_heat"], reverse=True)[:depth_k]
+            top_k_pool = rank_with_bounded_context(processed_pool)[:depth_k]
             selected = sorted(top_k_pool, key=lambda x: x.get("timestamp", 0))
 
         else:
             # Standard heat-descending or gradient conduction
-            selected = sorted(processed_pool, key=lambda x: x["effective_heat"], reverse=True)[:depth_k]
+            selected = rank_with_bounded_context(processed_pool)[:depth_k]
 
         selected = [item for item in selected if item["effective_heat"] >= cfg["min_confidence"]]
 
@@ -122,5 +162,6 @@ class CardRouter:
             "archetype": archetype,
             "depth_k": depth_k,
             "token_budget": cfg["max_tokens"],
+            "category_hint": category_hint,
             "selected_items": selected
         }

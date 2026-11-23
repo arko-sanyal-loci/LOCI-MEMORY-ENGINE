@@ -41,8 +41,9 @@ CARD ARCHETYPE ROUTING
 author_ids: CLAUDE (implementation), ARKO (architecture direction)
 """
 
+import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from loci_engine.storage import StorageEngine
 from loci_engine.card_router import CardRouter
@@ -141,6 +142,9 @@ class SessionIngester:
         source_actor: Optional[str] = None,
         limit: int = 50,
         active_embedding: Optional[List[float]] = None,
+        category_hint: Optional[str] = None,
+        stream_context: Optional[Sequence[Mapping[str, Any]]] = None,
+        tiebreaker_context: Optional[Mapping[str, float]] = None,
     ) -> Dict[str, Any]:
         """CARD-mediated recall for the current query.
 
@@ -162,6 +166,9 @@ class SessionIngester:
         limit            : int           — max candidates to load (default 50)
         active_embedding : List[float]   — semantic vector; enables thermal
                                            gradient conduction in CardRouter
+        category_hint     : str|None      — optional validated CARD archetype
+        stream_context    : sequence      — bounded caller-provided stream evidence
+        tiebreaker_context: mapping       — bounded per-item tie scores
 
         Returns
         -------
@@ -173,10 +180,31 @@ class SessionIngester:
             source_actor=source_actor,
             limit=limit,
         )
+        # Prefer lexical matches when available. CARD still performs the
+        # thermal/archetype ranking, but unrelated hot turns must not displace
+        # a colder turn that actually answers the query.
+        if query and active_embedding is None:
+            terms = [
+                term.lower()
+                for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,}", query)
+            ]
+            terms = list(dict.fromkeys(terms))
+            if terms:
+                fts_query = " OR ".join(f'"{term.replace(chr(34), "")}"' for term in terms)
+                try:
+                    lexical = self.storage.lexical_search(fts_query, limit)
+                except Exception:
+                    lexical = []
+                if lexical:
+                    allowed = {item["id"] for item in lexical}
+                    candidates = [item for item in candidates if item["id"] in allowed]
         return CardRouter.execute_card_retrieval(
             query=query,
             candidates=candidates,
             active_embedding=active_embedding,
+            category_hint=category_hint,
+            stream_context=stream_context,
+            tiebreaker_context=tiebreaker_context,
         )
 
     def heat_decay_tick(
