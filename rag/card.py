@@ -3,16 +3,18 @@
 Implements the portable core of the CARD scheme described in
 "Category-Adaptive Recall Depth (CARD) for Heat-Tiered Memory Systems"
 (Sanyal, 2026, TDCommons #10856): retrieval depth K and ranking strategy
-are conditioned on a query category, assigned by a rule-based keyword
-heuristic (one of the three classification options the paper allows).
+are conditioned on a query category, assigned by the shared deterministic
+keyword heuristic used by both RAG and live-session recall.
 
 This module ranks knowledge_update results by real heat from
 `loci_engine.vectors.VectorStore` (recency as a tie-break when heat is
 equal or absent), and temporal_reasoning results by document metadata
 dates - there is still no entity co-occurrence graph or fact versioning
-consumed here beyond heat itself, so multi_session_reasoning still only
-gets the deeper K without graph-hop expansion (tracked as a later plan).
+consumed here beyond heat itself. Multi-session and temporal RAG additionally
+follow bounded adjacent chunks from the same source and page.
 """
+
+from loci_engine.card_categories import classify_query_category
 
 RECALL_DEPTH = {
     "information_extraction": 5,
@@ -20,31 +22,6 @@ RECALL_DEPTH = {
     "multi_session_reasoning": 10,
     "temporal_reasoning": 7,
 }
-
-_KNOWLEDGE_UPDATE_KEYWORDS = (
-    "update", "updated", "change", "changed", "now", "current",
-    "currently", "latest", "revised", "as of",
-)
-_TEMPORAL_KEYWORDS = (
-    "when", "before", "after", "history", "over time", "timeline",
-    "previously", "used to", "evolve", "evolution",
-)
-_MULTI_SESSION_KEYWORDS = (
-    "compare", "across", "summarize", "summarise", "overall", "combine",
-    "synthesize", "synthesise", "throughout", "every",
-)
-
-
-def classify_query_category(question: str) -> str:
-    q = question.lower()
-    if any(keyword in q for keyword in _KNOWLEDGE_UPDATE_KEYWORDS):
-        return "knowledge_update"
-    if any(keyword in q for keyword in _TEMPORAL_KEYWORDS):
-        return "temporal_reasoning"
-    if any(keyword in q for keyword in _MULTI_SESSION_KEYWORDS):
-        return "multi_session_reasoning"
-    return "information_extraction"
-
 
 def recall_depth(category: str) -> int:
     return RECALL_DEPTH[category]

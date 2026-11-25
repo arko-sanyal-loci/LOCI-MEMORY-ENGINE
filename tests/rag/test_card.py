@@ -17,6 +17,11 @@ def test_classify_detects_multi_session_reasoning():
     assert classify_query_category("Summarize and compare findings across all the papers") == "multi_session_reasoning"
 
 
+def test_classify_routes_related_cross_source_context_to_deeper_recall():
+    query = "Find the Microsoft setup conversation and related Drive context"
+    assert classify_query_category(query) == "multi_session_reasoning"
+
+
 def test_recall_depth_matches_card_paper_table():
     assert RECALL_DEPTH["information_extraction"] == 5
     assert RECALL_DEPTH["knowledge_update"] == 3

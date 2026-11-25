@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased] — 2026-11-19
+## [Unreleased] — 2026-11-25
 
 ### Added
 
@@ -53,6 +53,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`config/nodes.env.example`** — Template for per-machine node config
   (replaces the previously tracked `config/nodes.env` which could contain
   host/IP details).
+- **`loci_engine/card_categories.py`** — Shared deterministic CARD query
+  classifier used by both the RAG pipeline and live-session routing.
+- **Adjacent-chunk recall** — Multi-session and temporal RAG queries can now
+  include a bounded window of neighboring chunks from the same source and
+  page while retaining provenance metadata.
+- **`docs/billo-tech-microsoft-setup.md`** — Planning notes for a future
+  Microsoft 365/Entra setup and explicitly authorized source connectors.
 
 ### Changed
 
@@ -72,6 +79,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`RAG_COMPRESS_RATIO`); optional abstain (`RAG_ABSTAIN_ON_GATE`).
 - **`rag/config.py`** — Added `COMPRESS_RATIO`, `ABSTAIN_ON_GATE`; normalised
   `DB_PATH` / `CHROMA_DB_PATH` alias.
+- **`rag/pipeline.py`** — Uses the shared CARD classifier, labels retrieved
+  versus adjacent context, and reports seed/neighbor/context counts.
+- **`loci_engine/vectors.py`** — Adds a source/page/start-position index and
+  bounded document-order neighbor lookup without hiding cold-tier chunks.
+- **`pyproject.toml`** — Promotes FastAPI and Pydantic from an optional bridge
+  extra to runtime dependencies because `loci_engine.sovereign_bridge` imports
+  them as part of the installed package.
 - **`mac-install/extractors/qsymprev_extractor.py`** (and `isymprev_extractor.py`,
   `loci_facts_extractor.py`, `scripts/loci_writer.py`) — API keys are now
   stored as `<redacted:{entity}:{sha8}>` placeholders, not plain text.

@@ -11,6 +11,8 @@ Implements the 4 core archetypes from LongMemEval-500:
 import math
 from typing import Dict, List, Any, Optional
 
+from loci_engine.card_categories import classify_query_category
+
 class CardRouter:
     ARCHETYPE_CONFIGS = {
         "information_extraction": {
@@ -41,14 +43,7 @@ class CardRouter:
 
     @classmethod
     def classify_archetype(cls, query: str) -> str:
-        q = query.lower()
-        if any(w in q for w in ["update", "changed", "now", "latest", "current", "supersede", "revision"]):
-            return "knowledge_update"
-        elif any(w in q for w in ["when", "timeline", "history", "before", "after", "earlier", "since"]):
-            return "temporal_reasoning"
-        elif any(w in q for w in ["why", "how did", "connect", "across", "relationship", "synthesize", "root cause"]):
-            return "multi_session_reasoning"
-        return "information_extraction"
+        return classify_query_category(query)
 
     @classmethod
     def execute_card_retrieval(

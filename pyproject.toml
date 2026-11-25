@@ -17,12 +17,13 @@ dependencies = [
   "pypdf>=4.0",
   "langchain-core>=0.2",
   "langchain-text-splitters>=0.2",
+  "fastapi>=0.110",
+  "pydantic>=2",
 ]
 
 [project.optional-dependencies]
 # coordination_bus/mcp_server.py uses mcp.server.fastmcp, renamed in mcp 2.x.
 mcp = ["mcp>=1.2,<2"]
-bridge = ["fastapi>=0.110", "pydantic>=2"]
 dev = ["pytest>=8", "numpy>=1.26", "pyflakes>=3"]
 
 [tool.setuptools.packages.find]
