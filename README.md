@@ -323,9 +323,15 @@ See [`AUTHORS.md`](AUTHORS.md) for complete attribution.
 
 ## License
 
-MIT — see [`LICENSE.md`](LICENSE.md).
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** — see [`LICENSE`](LICENSE).
 
-Benchmarks under `research/trs_verification_package/` derive from Ptyxis
-(AGPL-3.0) and are not part of the installable package. Certain architectural
-ideas are subject to patent consideration by Arko Sanyal / Atlas BD (filing
-anticipated before July 4, 2027). No patent rights are granted by this license.
+Commercial use — including use in a closed-source product or service, or use in a paid offering
+without releasing source code under AGPL-3.0 — requires a written commercial license from
+**Billo Tech**. See [`COMMERCIAL.md`](COMMERCIAL.md) for details.
+
+Benchmarks under `research/trs_verification_package/` derive from Ptyxis (AGPL-3.0) and are not
+part of the installable package. Certain architectural ideas are subject to patent consideration
+by Arko Sanyal / Atlas BD (filing anticipated before July 4, 2027). No patent rights are granted
+by this license.
+
+© [Billo Tech](https://billo.tech)
