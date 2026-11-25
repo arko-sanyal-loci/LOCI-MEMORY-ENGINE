@@ -73,7 +73,7 @@ def _similarities(results: list[dict]) -> list[float]:
     return [1.0 / (1.0 + r["distance"]) if r.get("distance") is not None else 0.0 for r in results]
 
 
-def query(question: str, top_k: int | None = None) -> dict:
+def query(question: str, top_k: int | None = None, neighborhood_window: int = 1) -> dict:
     """Answer ``question`` from the stored chunks.
 
     Returns ``{answer, sources, category, recall_depth, gate, compression}``.
@@ -94,16 +94,32 @@ def query(question: str, top_k: int | None = None) -> dict:
 
     gate = dynamic_tau(question, _similarities(pool))
     results = apply_ranking_strategy(category, pool[:k])
-    sources = sorted({r["metadata"].get("source", "?") for r in results})
+    # Broader relationship and timeline questions benefit from neighboring
+    # chunks in the same source. Expansion is deliberately bounded and
+    # provenance-preserving; it does not imply Drive/Gmail/Dropbox access.
+    neighbors = []
+    if category in {"multi_session_reasoning", "temporal_reasoning"} and neighborhood_window:
+        engine = VectorStore(path=config.DB_PATH)
+        try:
+            neighbors = engine.neighbors(results, window=neighborhood_window)
+        finally:
+            engine.close()
+    context_results = results + neighbors
+    sources = sorted({r["metadata"].get("source", "?") for r in context_results})
 
     if config.ABSTAIN_ON_GATE and not gate.passed:
         return {"answer": ABSTAIN_ANSWER, "sources": [], "category": category,
                 "recall_depth": k, "gate": gate.as_dict(), "compression": None}
 
-    context = "\n\n".join(f"[{i + 1}] {r['text']}" for i, r in enumerate(results))
+    context = "\n\n".join(
+        f"[{i + 1}] [source={r['metadata'].get('source', '?')}; "
+        f"page={r['metadata'].get('page', 0)}; "
+        f"relation={r.get('relation', 'retrieved')}] {r['text']}"
+        for i, r in enumerate(context_results)
+    )
     compression = None
     if config.COMPRESS_RATIO > 0 and context:
-        res = TfidfCompressor().compress([r["text"] for r in results], question,
+        res = TfidfCompressor().compress([r["text"] for r in context_results], question,
                                          target_ratio=config.COMPRESS_RATIO)
         context = res.text
         compression = {"ratio": round(res.ratio, 3), "original_tokens": res.original_tokens,
@@ -117,4 +133,6 @@ def query(question: str, top_k: int | None = None) -> dict:
     answer = generate(prompt)
 
     return {"answer": answer, "sources": sources, "category": category, "recall_depth": k,
+            "seed_count": len(results), "neighbor_count": len(neighbors),
+            "context_count": len(context_results), "neighborhood_window": neighborhood_window,
             "gate": gate.as_dict(), "compression": compression}

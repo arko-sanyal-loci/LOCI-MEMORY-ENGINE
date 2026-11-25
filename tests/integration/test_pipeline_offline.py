@@ -96,6 +96,37 @@ def test_retrieval_reinforces_heat(offline):
     assert all(0.05 <= h < 1.0 for h in after.values())  # open interval, alpha floor
 
 
+def test_multi_session_query_expands_adjacent_chunks_with_provenance(offline):
+    store = VectorStore(path=offline["db"])
+    texts = [
+        "Earlier notes mention a Billo Tech identity context.",
+        "Billo Microsoft tenant setup requires domain DNS verification.",
+        "The adjacent note says to record the tenant ID after setup.",
+    ]
+    vectors = fake_embed(texts)
+    store.add(
+        ids=["prev", "tenant", "next"],
+        embeddings=vectors,
+        texts=texts,
+        metadatas=[
+            {"source": "m365-notes.txt", "page": 0, "start_index": 0},
+            {"source": "m365-notes.txt", "page": 0, "start_index": 100},
+            {"source": "m365-notes.txt", "page": 0, "start_index": 200},
+        ],
+    )
+    store.close()
+
+    result = pipeline.query("Summarize Billo Microsoft tenant setup across notes", top_k=1)
+
+    assert result["category"] == "multi_session_reasoning"
+    assert result["neighbor_count"] == 2
+    assert result["context_count"] == 3
+    prompt = offline["prompts"][-1]
+    assert "relation=adjacent_chunk" in prompt
+    assert "tenant ID after setup" in prompt
+    assert "m365-notes.txt" in prompt
+
+
 def test_abstain_and_compression_flags(offline, monkeypatch):
     pipeline.ingest()
     monkeypatch.setattr(config, "COMPRESS_RATIO", 2.0)

@@ -130,6 +130,49 @@ def test_query_text_with_no_word_tokens_skips_the_sparse_arm(tmp_path):
     assert results[0]["id"] == "a"
 
 
+def test_neighbors_follow_document_order_without_crossing_source_or_page(tmp_path):
+    store = VectorStore(str(tmp_path / "loci.db"))
+    store.add(
+        ids=["before", "seed", "after", "other_page", "other_source"],
+        embeddings=[[1.0] + [0.0] * 767] * 5,
+        texts=["before", "seed", "after", "other page", "other source"],
+        metadatas=[
+            {"source": "mail.pdf", "page": 1, "start_index": 0},
+            {"source": "mail.pdf", "page": 1, "start_index": 100},
+            {"source": "mail.pdf", "page": 1, "start_index": 200},
+            {"source": "mail.pdf", "page": 2, "start_index": 0},
+            {"source": "other.pdf", "page": 1, "start_index": 200},
+        ],
+    )
+
+    neighbors = store.neighbors([{"id": "seed", "metadata": {"source": "mail.pdf", "page": 1}}])
+
+    assert [item["id"] for item in neighbors] == ["before", "after"]
+    store._conn.execute("UPDATE chunk_meta SET heat = 0.10 WHERE chunk_id = 'after'")
+    cold_neighbor = store.neighbors(
+        [{"id": "seed", "metadata": {"source": "mail.pdf", "page": 1}}]
+    )[-1]
+    assert cold_neighbor["heat"] == 0.10  # cold is searchable archival state
+    assert all(item["relation"] == "adjacent_chunk" for item in neighbors)
+    assert all(item["relative_to"] == "seed" for item in neighbors)
+
+
+def test_neighbors_can_traverse_more_than_one_chunk_but_remain_bounded(tmp_path):
+    store = VectorStore(str(tmp_path / "loci.db"))
+    store.add(
+        ids=["a", "b", "c", "d"],
+        embeddings=[[1.0] + [0.0] * 767] * 4,
+        texts=["a", "b", "c", "d"],
+        metadatas=[{"source": "thread.txt", "start_index": i * 100} for i in range(4)],
+    )
+
+    neighbors = store.neighbors(
+        [{"id": "b", "metadata": {"source": "thread.txt", "page": 0}}], window=2
+    )
+
+    assert {item["id"] for item in neighbors} == {"a", "c", "d"}
+
+
 def test_rrf_tie_break_is_deterministic_by_ascending_chunk_id(tmp_path):
     # "z" wins the dense arm outright (rank 0, exact embedding match) and never
     # appears in the sparse arm (its text has no overlap with the query text).

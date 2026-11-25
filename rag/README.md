@@ -31,6 +31,14 @@ python -m rag query "What does paper 04 say about recall depth?"
 python -m rag query "What changed recently?" --top-k 3
 ```
 
+For `multi_session_reasoning` and `temporal_reasoning` queries, the pipeline
+also follows one adjacent chunk in either direction within the same source and
+page. This is bounded document-order traversal; it preserves source/page
+provenance and can include cold-tier rows because cold is archival placement,
+not deletion. It does not yet search Gmail, Google Drive, or Dropbox at query
+time. Those sources must be explicitly authorized and ingested (or connected
+through a future source adapter) before local agents can retrieve them.
+
 ## Configuration
 
 All settings are environment-overridable via `rag/config.py`:

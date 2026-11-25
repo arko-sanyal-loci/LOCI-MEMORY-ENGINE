@@ -35,5 +35,12 @@ class TestCardRouter(unittest.TestCase):
         c3 = next(x for x in res["selected_items"] if x["id"] == "c3")
         self.assertGreater(c3["effective_heat"], 0.3)
 
+    def test_live_and_rag_card_share_cross_context_classification(self):
+        from rag.card import classify_query_category
+
+        query = "Find the Microsoft setup conversation and related Drive context"
+        self.assertEqual(CardRouter.classify_archetype(query), "multi_session_reasoning")
+        self.assertEqual(CardRouter.classify_archetype(query), classify_query_category(query))
+
 if __name__ == "__main__":
     unittest.main()

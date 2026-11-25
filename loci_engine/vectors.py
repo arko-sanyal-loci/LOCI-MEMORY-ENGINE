@@ -92,6 +92,12 @@ class VectorStore:
             CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
                 chunk_id UNINDEXED, text
             );
+            CREATE INDEX IF NOT EXISTS idx_chunk_source_page_start
+                ON chunk_meta (
+                    json_extract(metadata, '$.source'),
+                    COALESCE(json_extract(metadata, '$.page'), 0),
+                    CAST(json_extract(metadata, '$.start_index') AS INTEGER)
+                );
             """
         )
         # CREATE TABLE IF NOT EXISTS is a no-op against a chunk_meta table that
@@ -230,6 +236,75 @@ class VectorStore:
             )
         self._conn.commit()
         return results
+
+    def neighbors(self, results: list[dict], window: int = 1) -> list[dict]:
+        """Return bounded adjacent chunks from the same source/page.
+
+        This is a locality expansion step for multi-session/temporal recall.
+        It follows document order (``start_index``), not semantic similarity,
+        and never crosses a source or page boundary.  Every returned row keeps
+        its original metadata so callers can cite where the context came from.
+        Cold chunks remain eligible: tier is a placement/priority signal, not
+        a deletion or visibility rule.
+        """
+        if window < 1 or not results:
+            return []
+
+        known = {item["id"] for item in results}
+        expanded = []
+        for result in results:
+            metadata = result.get("metadata", {})
+            source = metadata.get("source")
+            start_index = metadata.get("start_index")
+            if start_index is None and result.get("id"):
+                stored = self._conn.execute(
+                    "SELECT metadata FROM chunk_meta WHERE chunk_id = ?", (result["id"],)
+                ).fetchone()
+                if stored:
+                    stored_metadata = json.loads(stored[0])
+                    source = source or stored_metadata.get("source")
+                    metadata = {**stored_metadata, **metadata}
+                    start_index = metadata.get("start_index")
+            if source is None or start_index is None:
+                continue
+            page = metadata.get("page", 0)
+            ordering = "CAST(json_extract(metadata, '$.start_index') AS INTEGER)"
+            common = (
+                "SELECT chunk_id, text, metadata, heat FROM chunk_meta "
+                "WHERE json_extract(metadata, '$.source') = ? "
+                "AND COALESCE(json_extract(metadata, '$.page'), 0) = ? "
+                f"AND {ordering} {{operator}} ? "
+                "ORDER BY " + ordering + " {direction}, chunk_id {direction} LIMIT ?"
+            )
+            before_rows = self._conn.execute(
+                common.format(operator="<", direction="DESC"),
+                (str(source), page, int(start_index), window),
+            ).fetchall()
+            after_rows = self._conn.execute(
+                common.format(operator=">", direction="ASC"),
+                (str(source), page, int(start_index), window),
+            ).fetchall()
+            for chunk_id, text, metadata_json, heat in reversed(before_rows):
+                if chunk_id in known:
+                    continue
+                expanded.append({
+                    "id": chunk_id, "text": text,
+                    "metadata": json.loads(metadata_json),
+                    "heat": heat if heat is not None else DEFAULT_CHUNK_HEAT,
+                    "relation": "adjacent_chunk", "relative_to": result["id"],
+                })
+                known.add(chunk_id)
+            for chunk_id, text, metadata_json, heat in after_rows:
+                if chunk_id in known:
+                    continue
+                expanded.append({
+                    "id": chunk_id, "text": text,
+                    "metadata": json.loads(metadata_json),
+                    "heat": heat if heat is not None else DEFAULT_CHUNK_HEAT,
+                    "relation": "adjacent_chunk", "relative_to": result["id"],
+                })
+                known.add(chunk_id)
+        return expanded
 
     def count(self) -> int:
         """Number of stored chunks."""
