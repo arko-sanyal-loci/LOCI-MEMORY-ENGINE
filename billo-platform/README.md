@@ -80,7 +80,7 @@ bash deploy/scripts/check_health.sh
 
 ## Local GPU Workstation Quickstart (Windows 11)
 
-Hardware: Intel i7-12700K | NVIDIA RTX 3080 Ti | 32GB DDR5  
+Hardware: Intel i7-12700K | NVIDIA RTX 3080 Ti | 32GB DDR5
 Location: `F:\Billo\`
 
 1. **Ensure Ollama is running locally** with `qwen2.5-coder:14b`:
