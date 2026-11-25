@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v3.1
+    container_name: billo-traefik
+    restart: always
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entryPoints.web.address=:80"
+      - "--entryPoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in the deployment environment}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./letsencrypt:/letsencrypt"
+    networks:
+      - billo-net
+
+  ollama-vps:
+    image: ollama/ollama:latest
+    container_name: billo-ollama-vps
+    restart: always
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - billo-net
+    # Port 11434 kept internal on billo-net, NOT exposed to host interface
+
+  billo-api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    container_name: billo-api
+    restart: always
+    environment:
+      - BILLO_DB_PATH=/app/data/context2.db
+      - OLLAMA_VPS_DIRECT=http://ollama-vps:11434
+      - TIMEOUT_VPS_COMPRESS=60.0
+      - DOMAIN=billo.tech
+      - ARC_DOMAIN=arc.billo.tech
+    volumes:
+      - billo_data:/app/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.billo.rule=Host(`billo.tech`) || Host(`www.billo.tech`) || Host(`arc.billo.tech`)"
+      - "traefik.http.routers.billo.entrypoints=websecure"
+      - "traefik.http.routers.billo.tls.certresolver=myresolver"
+      - "traefik.http.services.billo.loadbalancer.server.port=8000"
+    depends_on:
+      - ollama-vps
+    networks:
+      - billo-net
+
+  billo-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.worker
+    container_name: billo-worker
+    restart: always
+    environment:
+      - BILLO_DB_PATH=/app/data/context2.db
+      - OLLAMA_VPS_DIRECT=http://ollama-vps:11434
+      - TIMEOUT_VPS_COMPRESS=60.0
+    volumes:
+      - billo_data:/app/data
+    depends_on:
+      - ollama-vps
+      - billo-api
+    networks:
+      - billo-net
+
+volumes:
+  billo_data:
+  ollama_data:
+
+networks:
+  billo-net:
+    driver: bridge

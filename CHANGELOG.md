@@ -5,9 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased] — 2026-11-19
+## [Unreleased] — 2026-11-25
 
 ### Added
+
+- **`billo-platform/`** — Preserved Billo orchestration/deployment source
+  snapshot with original/current SHA-256 manifests and explicit isolation from
+  the canonical LOCI runtime.
+- **Billo release documentation** — Adds organization, agent operating model,
+  and release-readiness records; runtime/evidence state remains excluded.
+- **Reproducible Billo dependencies** — Adds universal runtime and development
+  lock files generated from the reviewed requirement inputs.
 
 - **`loci_engine/vectors.py`** — Ported from the September engine. `VectorStore`
   wraps sqlite-vec + FTS5 with RRF(k=60) hybrid retrieval; chunk heat is
@@ -55,6 +63,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   host/IP details).
 
 ### Changed
+
+- **Billo Ollama defaults** — Replaces a hardcoded public VPS address with the
+  loopback default; deployments must opt into any non-loopback endpoint.
 
 - **`loci_engine/heat.py`** — `TIER_HOT_BOUNDARY = VRAM_ADMISSION_THRESHOLD = 0.7000`.
   The old 0.80 cutoff was never read by running code; this unifies the two

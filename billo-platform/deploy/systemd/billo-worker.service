@@ -1,0 +1,21 @@
+[Unit]
+Description=Billo Learning Loop Background Worker
+After=network.target billo-api.service
+
+[Service]
+Type=simple
+User=billo
+Group=billo
+WorkingDirectory=/opt/billo
+EnvironmentFile=-/opt/billo/.env
+Environment=BILLO_DB_PATH=/opt/billo/data/context2.db
+Environment=OLLAMA_VPS_DIRECT=http://127.0.0.1:11434
+Environment=TIMEOUT_VPS_COMPRESS=60.0
+ExecStart=/opt/billo/venv/bin/python3 Workers/learning_loop.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/billo/worker.log
+StandardError=append:/var/log/billo/worker_error.log
+
+[Install]
+WantedBy=multi-user.target

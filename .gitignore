@@ -26,6 +26,14 @@ feedback_ledger.jsonl*
 agent_registry.json
 .venv/
 
+# Billo local runtime and evidence state
+billo-platform/.env
+billo-platform/data/
+billo-platform/letsencrypt/
+cold_start_cache.json
+loci_agent_evidence_manifest.json
+td_commons_hashchain.jsonl
+
 # Real node addresses (template: config/nodes.env.example)
 config/nodes.env
 .env

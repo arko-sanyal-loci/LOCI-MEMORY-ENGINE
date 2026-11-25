@@ -8,6 +8,13 @@ A heat-tiered, goal-conditioned persistent memory substrate for long-horizon AI 
 > **This is the canonical repository.** All prior forks and experimental branches have been consolidated here.
 > See [`AUTHORS.md`](AUTHORS.md) for full credits and [`PAPERS.md`](PAPERS.md) for the research publications.
 
+The `billo-platform/` directory is a preserved deployment-source snapshot,
+not an integrated or production-ready LOCI runtime. Its independent storage
+schema, unauthenticated API surface, and deployment assumptions must remain
+isolated until the gates in [`docs/release-readiness.md`](docs/release-readiness.md)
+are satisfied. Runtime caches, evidence manifests, and hash-chain journals are
+intentionally excluded from Git.
+
 ---
 
 ## What It Does

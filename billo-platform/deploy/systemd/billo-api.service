@@ -1,0 +1,23 @@
+[Unit]
+Description=Billo FastAPI Backend Daemon (over Unix Socket)
+After=network.target
+
+[Service]
+Type=simple
+User=billo
+Group=billo
+WorkingDirectory=/opt/billo
+RuntimeDirectory=billo
+RuntimeDirectoryMode=0755
+EnvironmentFile=-/opt/billo/.env
+Environment=BILLO_DB_PATH=/opt/billo/data/context2.db
+Environment=OLLAMA_VPS_DIRECT=http://127.0.0.1:11434
+Environment=TIMEOUT_VPS_COMPRESS=60.0
+ExecStart=/opt/billo/venv/bin/uvicorn billo.app:app --uds /run/billo/billo.sock --workers 2 --proxy-headers
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/billo/api.log
+StandardError=append:/var/log/billo/api_error.log
+
+[Install]
+WantedBy=multi-user.target
