@@ -1,6 +1,6 @@
 # Billo Tech Microsoft 365 and GNOME setup
 
-**Status checked:** 2026-11-22  
+**Status checked:** 2026-11-22
 **State:** planning only; no Microsoft tenant was created or changed in this review.
 
 ## What the records establish
